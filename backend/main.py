@@ -1,0 +1,154 @@
+import sys
+import asyncio
+
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except Exception:
+        pass
+
+import logging
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+from backend.config import STARTING_URL, BACKEND_HOST, BACKEND_PORT
+from backend.controller import AutomationController
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger("udyam_assistant")
+
+controller = AutomationController()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Starting Udyam AI Login Assistant Backend...")
+    yield
+    logger.info("Shutting down Playwright MCP and backend...")
+    await controller.mcp_client.stop()
+
+app = FastAPI(title="Udyam AI Login Assistant", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class UserInputPayload(BaseModel):
+    text: str
+
+@app.get("/")
+def read_root():
+    return {
+        "project": "Udyam AI Login Assistant",
+        "target_url": STARTING_URL,
+        "status": "ready"
+    }
+
+@app.get("/api/snapshot")
+def get_snapshot():
+    return {
+        "snapshot": controller.mcp_client.last_snapshot_text
+    }
+
+@app.get("/api/status")
+def get_status():
+    return {
+        "status": controller.browser_status.dict(),
+        "starting_url": STARTING_URL,
+        "step": controller.current_analysis.step_name if controller.current_analysis else "none"
+    }
+
+@app.get("/api/messages")
+def get_messages():
+    return [m.dict() for m in controller.messages]
+
+@app.post("/api/start")
+async def start_session():
+    asyncio.create_task(controller.start_session())
+    return {"message": "Session startup initiated"}
+
+@app.post("/api/inspect")
+async def inspect_page():
+    asyncio.create_task(controller.inspect_and_analyze_page())
+    return {"message": "Inspection initiated"}
+
+@app.post("/api/fill")
+async def fill_form():
+    asyncio.create_task(controller.fill_form_on_portal())
+    return {"message": "Form filling initiated"}
+
+@app.post("/api/trigger-otp")
+async def trigger_otp():
+    asyncio.create_task(controller.trigger_otp_generation())
+    return {"message": "OTP generation triggered"}
+
+@app.post("/api/check-otp")
+async def check_otp():
+    asyncio.create_task(controller.check_otp_completion())
+    return {"message": "Checking OTP status"}
+
+@app.post("/api/stop")
+async def stop_session():
+    await controller.mcp_client.stop()
+    await controller.update_status("idle", "Browser closed.")
+    return {"message": "Browser session stopped"}
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    controller.add_websocket(websocket)
+    logger.info("WebSocket client connected")
+
+    try:
+        # Immediately push current state and history to new client
+        await websocket.send_json({
+            "type": "init",
+            "data": {
+                "browser_status": controller.browser_status.dict(),
+                "starting_url": STARTING_URL,
+                "messages": [m.dict() for m in controller.messages]
+            }
+        })
+
+        while True:
+            data = await websocket.receive_json()
+            msg_type = data.get("type")
+
+            if msg_type == "user_input":
+                user_text = data.get("text", "")
+                await controller.handle_user_input(user_text)
+
+            elif msg_type == "start_session":
+                asyncio.create_task(controller.start_session())
+
+            elif msg_type == "inspect_page":
+                asyncio.create_task(controller.inspect_and_analyze_page())
+
+            elif msg_type == "fill_form":
+                asyncio.create_task(controller.fill_form_on_portal())
+
+            elif msg_type == "trigger_otp":
+                asyncio.create_task(controller.trigger_otp_generation())
+
+            elif msg_type == "validate_otp":
+                asyncio.create_task(controller.trigger_otp_validation())
+
+            elif msg_type == "check_otp":
+                asyncio.create_task(controller.check_otp_completion())
+
+    except WebSocketDisconnect:
+        logger.info("WebSocket client disconnected")
+        controller.remove_websocket(websocket)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        controller.remove_websocket(websocket)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("backend.main:app", host=BACKEND_HOST, port=BACKEND_PORT, reload=False)
+
