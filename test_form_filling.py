@@ -1,76 +1,67 @@
 """
-Pytest Suite: Form Filling & Browser Automation
-Verifies Groq field mapping, Playwright MCP tool execution, and browser value verification.
+Pytest Suite: Universal Form Filling & Browser Automation
+Verifies dynamic field mapping, snapshot ref resolution, and answer validation across ANY website.
 """
 
 import asyncio
 from backend.groq_service import GroqService
-from backend.controller import AutomationController
+from backend.validator import AnswerValidator
 
-def test_groq_field_mapping():
-    """Test that Groq maps structured user data to live accessibility snapshot elements."""
+def test_universal_groq_field_mapping():
+    """Test that Groq dynamically maps arbitrary user data to live accessibility snapshot elements."""
     service = GroqService()
     
     mock_snapshot = """
-- generic [ref=e49]:
-  - generic [ref=e50]:
-    - generic [ref=e52]:
-      - text: 1. Aadhaar Number
-      - textbox "Your Aadhaar No" [ref=e53]
-    - generic [ref=e55]:
-      - text: 2. Name of Entrepreneur
-      - textbox "Name as per Aadhaar" [ref=e56]
-  - generic [ref=e65]:
-    - checkbox [ref=e66]
-    - text: I, the holder of the above Aadhaar, hereby give my consent...
+- generic [ref=e10]:
+  - form "Customer Registration" [ref=e11]:
+    - text: Full Name
+    - textbox "Enter your full name" [ref=e12]
+    - text: Email Address
+    - textbox "name@example.com" [ref=e13]
+    - text: Contact Number
+    - textbox "Phone Number" [ref=e14]
+    - text: Preferred Delivery Time
+    - combobox "Delivery Time" [ref=e15]:
+      - option "Morning"
+      - option "Afternoon"
+    - checkbox "I accept the terms and conditions" [ref=e16]
+    - button "Submit Application" [ref=e17]
     """
 
     user_data = {
-        "aadhaar_number": "123456789012",
-        "entrepreneur_name": "Rohan Kumar Sharma"
+        "full_name": "Jane Doe",
+        "email_address": "jane.doe@example.com",
+        "contact_number": "+1-555-0199"
     }
 
     result = service.map_data_to_form_fields(
         snapshot_text=mock_snapshot,
         collected_answers=user_data,
-        current_url="https://udyamregistration.gov.in/UdyamRegistration.aspx"
+        current_url="https://example.com/register"
     )
 
     mappings = result.get("mappings", [])
     assert len(mappings) >= 2, f"Expected at least 2 mappings, got {len(mappings)}"
     
     mapped_keys = {m["field_key"]: m["element_ref"] for m in mappings}
-    assert "aadhaar_number" in mapped_keys
-    assert mapped_keys["aadhaar_number"] == "e53"
-    assert "entrepreneur_name" in mapped_keys
-    assert mapped_keys["entrepreneur_name"] == "e56"
+    assert "full_name" in mapped_keys
+    assert mapped_keys["full_name"] == "e12"
+    assert "email_address" in mapped_keys
+    assert mapped_keys["email_address"] == "e13"
 
-def test_playwright_mcp_form_fill():
-    """Test full execution: start MCP, navigate to Udyam, fill fields, verify post-snapshot."""
-    async def _run():
-        controller = AutomationController(session_id="pytest_session")
-        controller.collected_answers = {
-            "aadhaar_number": "123456789012",
-            "entrepreneur_name": "Rohan Kumar Sharma"
-        }
+def test_universal_answer_validation():
+    """Test that generic fields (emails, phone, names, text) are validated accurately."""
+    # Email
+    valid, val, msg = AnswerValidator.validate_answer("test@domain.com", "email")
+    assert valid, f"Expected valid email: {msg}"
+    
+    invalid, _, msg = AnswerValidator.validate_answer("invalid-email", "email")
+    assert not invalid
 
-        connected = await controller.mcp_client.start()
-        assert connected, "Failed to start Playwright MCP"
+    # Phone
+    valid, val, msg = AnswerValidator.validate_answer("+1 (555) 234-5678", "phone")
+    assert valid
 
-        try:
-            await controller.mcp_client.navigate("https://udyamregistration.gov.in/UdyamRegistration.aspx")
-            await asyncio.sleep(2.0)
-
-            # Trigger dynamic form filling
-            await controller.fill_form_on_portal()
-
-            # Capture post-snapshot
-            snap = await controller.mcp_client.snapshot()
-            text = snap.get("snapshot_text", "")
-
-            assert "123456789012" in text, "Aadhaar number was not populated into portal textbox!"
-            assert "Rohan" in text, "Entrepreneur name was not populated into portal textbox!"
-        finally:
-            await controller.mcp_client.stop()
-
-    asyncio.run(_run())
+    # Generic Name
+    valid, val, msg = AnswerValidator.validate_answer("Dr. Evelyn Reed", "name")
+    assert valid

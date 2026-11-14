@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down Playwright MCP and backend...")
     await session_manager.stop_all()
 
-app = FastAPI(title="Udyam AI Login Assistant", lifespan=lifespan)
+app = FastAPI(title="Universal AI Browser Assistant", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -51,11 +51,15 @@ app.add_middleware(
 class UserInputPayload(BaseModel):
     text: str
 
+class StartSessionPayload(BaseModel):
+    url: Optional[str] = None
+    session_id: str = "default_session"
+
 @app.get("/")
 def read_root():
     return {
-        "project": "Udyam AI Login Assistant",
-        "target_url": STARTING_URL,
+        "project": "Universal AI Browser & Form Assistant",
+        "starting_url": STARTING_URL,
         "status": "ready"
     }
 
@@ -78,9 +82,12 @@ def get_messages():
     return [m.dict() for m in controller.messages]
 
 @app.post("/api/start")
-async def start_session():
-    asyncio.create_task(controller.start_session())
-    return {"message": "Session startup initiated"}
+async def start_session(payload: Optional[StartSessionPayload] = None):
+    url = payload.url if payload else None
+    sid = payload.session_id if payload else "default_session"
+    ctrl = session_manager.get_controller(sid)
+    asyncio.create_task(ctrl.start_session(url=url))
+    return {"message": "Session startup initiated", "target_url": url or STARTING_URL, "session_id": sid}
 
 @app.post("/api/inspect")
 async def inspect_page():
@@ -289,7 +296,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 await active_ctrl.handle_user_input(user_text)
 
             elif msg_type == "start_session":
-                asyncio.create_task(active_ctrl.start_session())
+                target_url = data.get("url")
+                asyncio.create_task(active_ctrl.start_session(url=target_url))
 
             elif msg_type == "inspect_page":
                 asyncio.create_task(active_ctrl.inspect_and_analyze_page())

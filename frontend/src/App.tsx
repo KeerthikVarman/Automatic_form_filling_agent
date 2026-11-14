@@ -15,17 +15,18 @@ import {
   FileText 
 } from 'lucide-react';
 
-const STARTING_URL = "https://udyamregistration.gov.in/UdyamRegistration.aspx";
+const DEFAULT_STARTING_URL = "https://httpbin.org/forms/post";
 
 export const App: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
+  const [targetUrl, setTargetUrl] = useState(DEFAULT_STARTING_URL);
   const [wsConnected, setWsConnected] = useState(false);
   const [browserStatus, setBrowserStatus] = useState<BrowserStatus>({
     is_connected: false,
-    current_url: STARTING_URL,
+    current_url: DEFAULT_STARTING_URL,
     automation_status: 'idle',
-    last_inspection_summary: 'Portal session not started yet.',
+    last_inspection_summary: 'Browser session not started yet.',
     detected_step: 'none',
     last_updated: Date.now()
   });
@@ -153,25 +154,59 @@ export const App: React.FC = () => {
       {/* App Header */}
       <header className="app-header">
         <div className="brand-section">
-          <div className="brand-badge">🇮🇳</div>
+          <div className="brand-badge">🌐</div>
           <div>
-            <h1 className="brand-title">Udyam AI Login Assistant</h1>
-            <p className="brand-subtitle">Playwright MCP • Groq Intelligence • Real-Time Synchronized Browser</p>
+            <h1 className="brand-title">Universal AI Browser Assistant</h1>
+            <p className="brand-subtitle">Dynamic Web Form Automation • Playwright MCP • Groq Intelligence</p>
           </div>
         </div>
 
         <div className="header-status-bar">
-          {/* Clickable Udyam Portal Hyperlink as required */}
-          <div className="url-box">
+          {/* Target URL Input & Live Link */}
+          <div className="url-box" style={{ display: 'flex', alignItems: 'center', gap: 6, maxWidth: 420, flex: 1 }}>
             <Globe size={16} color="#60a5fa" />
+            <input
+              type="text"
+              value={targetUrl}
+              onChange={(e) => setTargetUrl(e.target.value)}
+              placeholder="Enter target URL (e.g. https://...)"
+              style={{
+                background: 'rgba(255,255,255,0.06)',
+                border: '1px solid rgba(255,255,255,0.15)',
+                borderRadius: 4,
+                color: '#f9fafb',
+                padding: '4px 8px',
+                fontSize: '0.82rem',
+                flex: 1,
+                minWidth: 160
+              }}
+            />
+            <button
+              onClick={() => sendWsAction('start_session', { url: targetUrl.trim() })}
+              style={{
+                background: '#2563eb',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 4,
+                padding: '4px 10px',
+                fontSize: '0.8rem',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4
+              }}
+              title="Launch or navigate browser to this URL"
+            >
+              <Play size={12} /> Go
+            </button>
             <a 
-              href={browserStatus.current_url || STARTING_URL} 
+              href={browserStatus.current_url || targetUrl} 
               target="_blank" 
               rel="noopener noreferrer"
               className="portal-link"
-              title="Click to open official Udyam portal in a new browser tab"
+              title="Open current URL in external browser tab"
+              style={{ padding: '0 4px' }}
             >
-              Open Udyam Registration Portal
               <ExternalLink size={14} />
             </a>
           </div>
@@ -196,13 +231,13 @@ export const App: React.FC = () => {
             {messages.length === 0 && (
               <div style={{ textAlign: 'center', margin: 'auto', maxWidth: 460, color: 'var(--text-secondary)' }}>
                 <Bot size={48} color="#3b82f6" style={{ margin: '0 auto 16px' }} />
-                <h3 style={{ color: 'var(--text-primary)', marginBottom: 8 }}>Ready to Assist with Udyam Portal</h3>
+                <h3 style={{ color: 'var(--text-primary)', marginBottom: 8 }}>Universal Web Assistant Ready</h3>
                 <p style={{ fontSize: '0.9rem', lineHeight: 1.6, marginBottom: 20 }}>
-                  Click <strong>"Start Browser Session"</strong> to launch the visible Playwright browser tab, inspect the actual portal fields with Groq, and begin step-by-step assistance.
+                  Enter any webpage or form URL above and click <strong>"Start Browser Session"</strong> to launch the visible browser tab, dynamically inspect fields with Groq, and auto-fill information step-by-step.
                 </p>
                 <button 
                   className="interactive-action-btn"
-                  onClick={() => sendWsAction('start_session')}
+                  onClick={() => sendWsAction('start_session', { url: targetUrl.trim() })}
                 >
                   <Play size={16} /> Start Browser Session
                 </button>
@@ -222,20 +257,20 @@ export const App: React.FC = () => {
                   {msg.message_type === 'link_card' && (
                     <div className="card-link">
                       <a 
-                        href={STARTING_URL} 
+                        href={browserStatus.current_url || targetUrl} 
                         target="_blank" 
                         rel="noopener noreferrer"
                         className="portal-link"
                         style={{ fontSize: '0.92rem' }}
                       >
-                        🔗 Open Udyam Registration Portal (Official) <ExternalLink size={14} />
+                        🔗 Open Webpage ({browserStatus.current_url || targetUrl}) <ExternalLink size={14} />
                       </a>
                     </div>
                   )}
 
                   {msg.message_type === 'otp_alert' && (
                     <div className="card-alert card-otp">
-                      <strong>⚠️ Security Notice:</strong> Please type your Aadhaar OTP directly in the visible browser window. Never share OTPs in chat.
+                      <strong>⚠️ Security Notice:</strong> Please type any OTP or verification code directly in the visible browser window. Never share sensitive credentials in chat.
                       <div style={{ marginTop: 8 }}>
                         <button 
                           className="interactive-action-btn"
@@ -272,7 +307,7 @@ export const App: React.FC = () => {
                         style={{ background: '#059669' }}
                         onClick={() => sendWsAction('trigger_otp')}
                       >
-                        <Play size={16} /> Click 'Validate & Generate OTP'
+                        <Play size={16} /> Submit / Continue on Page
                       </button>
                     </div>
                   )}
@@ -284,14 +319,14 @@ export const App: React.FC = () => {
                         style={{ background: '#059669' }}
                         onClick={() => sendWsAction('validate_otp')}
                       >
-                        <CheckCircle2 size={16} /> Submit & Validate OTP on Website
+                        <CheckCircle2 size={16} /> Submit & Validate Code on Website
                       </button>
                     </div>
                   )}
 
                   {msg.message_type === 'success_alert' && (
                     <div className="card-alert card-success">
-                      <strong>Access Confirmed:</strong> Authentication stage completed successfully! You can now continue your registration directly in the portal tab.
+                      <strong>Access Confirmed:</strong> Authentication stage completed successfully! You can now continue your workflow directly in the browser tab.
                     </div>
                   )}
                 </div>
@@ -305,8 +340,8 @@ export const App: React.FC = () => {
             <div className="quick-actions-bar">
               <button 
                 className="action-chip primary"
-                onClick={() => sendWsAction('start_session')}
-                title="Launch visible browser and navigate to Udyam"
+                onClick={() => sendWsAction('start_session', { url: targetUrl.trim() })}
+                title="Launch visible browser and navigate to target URL"
               >
                 <Play size={14} /> Start / Connect Browser
               </button>
@@ -315,7 +350,7 @@ export const App: React.FC = () => {
                 onClick={() => sendWsAction('inspect_page')}
                 title="Capture accessibility tree and re-analyze with Groq"
               >
-                <RefreshCw size={14} /> Re-inspect Portal
+                <RefreshCw size={14} /> Re-inspect Webpage
               </button>
               <button 
                 className="action-chip"
@@ -327,9 +362,9 @@ export const App: React.FC = () => {
               <button 
                 className="action-chip warning"
                 onClick={() => sendWsAction('check_otp')}
-                title="Check if OTP was verified on the portal"
+                title="Check verification status on the page"
               >
-                <ShieldCheck size={14} /> Check OTP Status
+                <ShieldCheck size={14} /> Check Verification
               </button>
             </div>
 
@@ -337,7 +372,7 @@ export const App: React.FC = () => {
               <input 
                 type="text" 
                 className="text-input"
-                placeholder="Type your answer or command here (e.g. Aadhaar number, Name, or instructions)..."
+                placeholder="Type your answer, correction, or command here..."
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
               />
@@ -352,7 +387,7 @@ export const App: React.FC = () => {
         <aside className="side-pane">
           <div className="inspector-section">
             <div className="section-header">
-              <span>Browser & Portal Status</span>
+              <span>Browser & Page Status</span>
               <Globe size={16} color="#3b82f6" />
             </div>
             <div className="info-grid">
@@ -360,19 +395,19 @@ export const App: React.FC = () => {
                 <span className="info-label">Current Browser URL</span>
                 <span className="info-val">
                   <a 
-                    href={browserStatus.current_url || STARTING_URL} 
+                    href={browserStatus.current_url || targetUrl} 
                     target="_blank" 
                     rel="noopener noreferrer"
                     className="portal-link"
                   >
-                    Open Udyam Registration Portal ↗
+                    Open Webpage ↗
                   </a>
                 </span>
               </div>
               <div className="info-item">
                 <span className="info-label">Full URL Path</span>
                 <span className="info-val" style={{ fontSize: '0.78rem' }}>
-                  {browserStatus.current_url || STARTING_URL}
+                  {browserStatus.current_url || targetUrl}
                 </span>
               </div>
               <div className="info-item">
@@ -418,15 +453,15 @@ export const App: React.FC = () => {
               </li>
               <li className="security-item">
                 <span className="check-icon">✓</span>
-                <span>OTP entered directly on official website tab</span>
+                <span>OTP & verification codes entered directly on website tab</span>
               </li>
               <li className="security-item">
                 <span className="check-icon">✓</span>
-                <span>Aadhaar numbers masked in logs & chat display</span>
+                <span>Sensitive credentials masked in logs & chat display</span>
               </li>
               <li className="security-item">
                 <span className="check-icon">✓</span>
-                <span>Navigation restricted to udyamregistration.gov.in</span>
+                <span>Universal domain support with human-in-the-loop review</span>
               </li>
               <li className="security-item">
                 <span className="check-icon">✓</span>

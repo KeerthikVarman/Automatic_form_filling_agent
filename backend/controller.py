@@ -14,16 +14,14 @@ from backend.models import (
 )
 from backend.mcp_client import PlaywrightMCPClient
 from backend.groq_service import GroqService
-from backend.validator import validate_aadhaar, validate_name, validate_generic_field
+from backend.answer_validator import AnswerValidator
 
 logger = logging.getLogger("controller")
 logger.setLevel(logging.INFO)
 
-def mask_sensitive(val: str) -> str:
-    """Mask sensitive 12-digit number for safe display/logging."""
-    if len(val) == 12 and val.isdigit():
-        return "XXXX-XXXX-" + val[-4:]
-    return val[:2] + "****" if len(val) > 4 else "****"
+def mask_sensitive(val: str, field_name: str = "") -> str:
+    """Mask sensitive numbers, emails, passwords for safe display."""
+    return AnswerValidator.mask_sensitive_value(val, field_name=field_name)
 
 class AutomationController:
     def __init__(self, session_id: str = "default_session"):
@@ -110,22 +108,23 @@ class AutomationController:
         await self.broadcast("browser_status", self.browser_status.dict())
 
     def validate_domain(self, url: str) -> bool:
-        """Ensure navigation is restricted to approved government domains."""
-        from urllib.parse import urlparse
-        hostname = urlparse(url).hostname or ""
-        return any(hostname == d or hostname.endswith("." + d) for d in APPROVED_DOMAINS)
+        """Validate that the target is a valid HTTP/HTTPS web URL."""
+        if not url:
+            return False
+        return url.startswith(("http://", "https://"))
 
-    async def start_session(self):
-        """Start Playwright MCP, navigate to starting URL, inspect with Groq, and start chatbot conversation."""
+    async def start_session(self, url: Optional[str] = None):
+        """Start Playwright MCP, navigate to target website, inspect with Groq, and start chatbot conversation."""
         if self._is_navigating:
             logger.info("Session startup already in progress.")
             return
 
         self._is_navigating = True
+        target_url = url or self.browser_status.current_url or STARTING_URL
         try:
             # 1. Start MCP
-            await self.update_status("connecting", "Starting Playwright MCP server...")
-            msg = self.add_message("bot", "👋 Welcome to **Udyam AI Assistant**! Launching the visible Playwright browser session now...", "text")
+            await self.update_status("connecting", "Starting Playwright MCP browser server...")
+            msg = self.add_message("bot", "👋 Welcome to **Universal AI Browser Assistant**! Launching the visible Playwright browser session now...", "text")
             await self.broadcast_message(msg)
 
             connected = await self.mcp_client.start()
@@ -135,15 +134,16 @@ class AutomationController:
                 await self.broadcast_message(err_msg)
                 return
 
-            # 2. Navigate to Starting URL
-            if not self.validate_domain(STARTING_URL):
-                raise ValueError("Unauthorized target URL domain.")
+            # 2. Navigate to Target URL
+            if not self.validate_domain(target_url):
+                raise ValueError(f"Invalid web URL: {target_url}")
 
-            await self.update_status("navigating", f"Navigating to {STARTING_URL}...")
-            await self.mcp_client.navigate(STARTING_URL)
-            await self.update_status("website_opened", f"Opened {STARTING_URL} in visible browser.")
+            await self.update_status("navigating", f"Navigating to {target_url}...")
+            await self.mcp_client.navigate(target_url)
+            self.browser_status.current_url = target_url
+            await self.update_status("website_opened", f"Opened {target_url} in visible browser.")
             
-            nav_msg = self.add_message("bot", f"🌐 Connected to official portal:\n\n🔗 **[Open Udyam Registration Portal]({STARTING_URL})**\n\nThe actual browser window is open and visible on your desktop.", "link_card")
+            nav_msg = self.add_message("bot", f"🌐 Connected to website:\n\n🔗 **[Open Webpage]({target_url})**\n\nThe actual browser window is open and visible on your desktop.", "link_card")
             await self.broadcast_message(nav_msg)
 
             # 3. Inspect Page
@@ -185,10 +185,10 @@ class AutomationController:
 
             # Check for OTP or CAPTCHA right after inspection
             if analysis.has_otp:
-                await self.update_status("awaiting_otp", "Aadhaar OTP verification field detected.")
+                await self.update_status("awaiting_otp", "OTP / 2FA verification field detected.")
                 otp_msg = self.add_message(
                     "bot",
-                    "🔒 **OTP Verification Detected**\n\nAn Aadhaar OTP input is active on the portal.\n\n👉 **Security Rule**: Please enter the OTP directly on the open browser window. For your privacy, never send OTPs to this chat.",
+                    "🔒 **OTP Verification Detected**\n\nAn OTP / verification code input is active on the portal.\n\n👉 **Security Rule**: Please enter the code directly on the open browser window. For your privacy, never send OTPs to this chat.",
                     "otp_alert"
                 )
                 await self.broadcast_message(otp_msg)
@@ -205,11 +205,11 @@ class AutomationController:
                 return
 
             # Check if already authenticated
-            if analysis.is_authenticated or analysis.step_name in ("dashboard", "pan_verification", "enterprise_details"):
+            if analysis.is_authenticated or analysis.step_name in ("dashboard", "authenticated", "success", "profile"):
                 await self.update_status("verified", "Portal authentication / verification successful!", step=analysis.step_name)
                 succ_msg = self.add_message(
                     "bot",
-                    f"🎉 **Portal Access Succeeded!**\n\nYou have moved past initial Aadhaar verification to: **{analysis.step_name}**.\n\n🔗 **[Open Udyam Registration Portal]({current_url})**\n\nThe browser remains active for you to continue.",
+                    f"🎉 **Portal Access Succeeded!**\n\nYou have moved to: **{analysis.step_name}**.\n\n🔗 **[Open Webpage]({current_url})**\n\nThe browser remains active for you to continue.",
                     "success_alert"
                 )
                 await self.broadcast_message(succ_msg)
@@ -222,7 +222,7 @@ class AutomationController:
                     self.current_field_index = 0
                     intro_msg = self.add_message(
                         "bot",
-                        f"📋 I've inspected the official portal. To proceed with Aadhaar Verification, I need to collect **{len(analysis.fields)}** details from you.",
+                        f"📋 I've inspected the page (**{analysis.page_title}**). To complete the form, I need to collect **{len(analysis.fields)}** details from you.",
                         "text"
                     )
                     await self.broadcast_message(intro_msg)
@@ -235,10 +235,10 @@ class AutomationController:
                     await self.ask_next_field()
                 else:
                     logger.info("All fields already answered. Preserving user answers.")
-                    await self.update_status("awaiting_submission", "All fields collected. Ready to generate OTP.")
+                    await self.update_status("awaiting_submission", "All fields collected. Ready to fill.")
             else:
                 await self.update_status("idle", "No input fields identified on current page.")
-                msg = self.add_message("bot", "I could not locate any active input fields on this page. You can click 'Re-inspect Page' or navigate directly in the browser.", "text")
+                msg = self.add_message("bot", "I could not locate any active input fields on this page. You can click 'Re-inspect Page' or navigate to another page.", "text")
                 await self.broadcast_message(msg)
         finally:
             self._is_inspecting = False
@@ -281,14 +281,11 @@ class AutomationController:
             return
 
         # Record user message in conversation
-        is_sensitive = False
         current_field = None
         if self.current_analysis and self.current_field_index < len(self.current_analysis.fields):
             current_field = self.current_analysis.fields[self.current_field_index]
-            if "aadhaar" in current_field.field_id.lower():
-                is_sensitive = True
 
-        display_text = mask_sensitive(clean_text) if is_sensitive else clean_text
+        display_text = AnswerValidator.mask_sensitive_value(clean_text, current_field.field_type if current_field else "text", current_field.label if current_field else "")
         user_msg = self.add_message("user", display_text, "text")
         await self.broadcast_message(user_msg)
 
@@ -302,22 +299,14 @@ class AutomationController:
             await self.broadcast_message(msg)
             return
 
-        # Perform deterministic validation based on field type
-        is_valid = True
-        err_msg = ""
-        validated_val = clean_text
-
-        if "aadhaar" in current_field.field_id.lower():
-            is_valid, validated_val, err_msg = validate_aadhaar(clean_text)
-        elif "name" in current_field.field_id.lower():
-            is_valid, validated_val, err_msg = validate_name(clean_text)
-        else:
-            is_valid, validated_val, err_msg = validate_generic_field(
-                clean_text,
-                current_field.is_mandatory,
-                current_field.validation_regex,
-                current_field.validation_message
-            )
+        # Perform universal validation using AnswerValidator
+        is_valid, validated_val, err_msg = AnswerValidator.validate_answer(
+            user_input=clean_text,
+            field_name=current_field.label,
+            field_type=current_field.field_type,
+            options=current_field.options,
+            is_mandatory=current_field.is_mandatory
+        )
 
         if not is_valid:
             resp = self.add_message(
@@ -333,7 +322,7 @@ class AutomationController:
         self.collected_answers[current_field.field_id] = validated_val
         self.current_field_index += 1
 
-        ack_text = f"Got it! Validated **{current_field.label}**."
+        ack_text = f"Got it! Recorded **{current_field.label}**."
         ack_msg = self.add_message("bot", ack_text, "text")
         await self.broadcast_message(ack_msg)
 
@@ -342,12 +331,12 @@ class AutomationController:
             summary_lines = []
             for f in self.current_analysis.fields:
                 val = self.collected_answers.get(f.field_id, "")
-                masked = mask_sensitive(val) if "aadhaar" in f.field_id.lower() else val
+                masked = AnswerValidator.mask_sensitive_value(val, f.field_type, f.label)
                 summary_lines.append(f"• **{f.label}**: `{masked}`")
 
             ready_msg = self.add_message(
                 "bot",
-                "✅ **All required details collected!**\n\n" + "\n".join(summary_lines) + "\n\n🚀 **Automatically filling these details into the official Udyam portal in the visible browser now...**",
+                "✅ **All required details collected!**\n\n" + "\n".join(summary_lines) + "\n\n🚀 **Automatically filling these details into the website in the visible browser now...**",
                 "text"
             )
             await self.broadcast_message(ready_msg)
@@ -418,7 +407,7 @@ class AutomationController:
                     logger.warning(f"Skipping mapping without element_ref: {item}")
                     continue
 
-                masked_disp = mask_sensitive(val_to_fill) if "aadhaar" in field_key.lower() else val_to_fill
+                masked_disp = mask_sensitive(val_to_fill) if any(s in field_key.lower() for s in ["password", "secret", "pin", "ssn", "aadhaar"]) else val_to_fill
                 logger.info(f"[{self.session_id}] Executing action '{action}' on ref='{element_ref}' for '{label}' (type: {element_type})")
 
                 try:
@@ -501,16 +490,16 @@ class AutomationController:
                 fkey = item.get("field_key", "")
                 lbl = item.get("label", fkey)
                 val = str(item.get("value_to_fill", ""))
-                masked = mask_sensitive(val) if "aadhaar" in fkey.lower() else val
+                masked = mask_sensitive(val) if any(s in fkey.lower() for s in ["password", "secret", "pin", "ssn", "aadhaar"]) else val
                 verified_lines.append(f"• **{lbl}**: `{masked}`")
 
             if verified_lines:
                 fill_done_msg = self.add_message(
                     "bot",
-                    "✨ **Information Successfully Populated into Official Portal!**\n\n" +
+                    "✨ **Information Successfully Populated into Form!**\n\n" +
                     "\n".join(verified_lines) +
-                    "\n\n👀 **Please look at the open browser window on your desktop to review the populated fields.**\n\n" +
-                    "Ready to generate OTP? Click **'Validate & Generate OTP'** below, or click the button directly in the browser.",
+                    "\n\n👀 **Please review the populated fields in the browser window on your desktop.**\n\n" +
+                    "Ready to proceed? Review your inputs and submit or continue in the browser.",
                     "otp_prompt",
                     metadata={"action": "generate_otp", "verified_count": len(verified_items)}
                 )
@@ -572,7 +561,7 @@ class AutomationController:
 
                 # Check if portal rendered an in-page status/error message
                 for line in stext.splitlines():
-                    if any(k in line.lower() for k in ["otp has been sent", "already sent", "invalid aadhaar", "mismatch", "uidai", "already generated"]):
+                    if any(k in line.lower() for k in ["otp has been sent", "already sent", "verification code", "mismatch", "already generated", "code sent"]):
                         clean_line = line.strip().lstrip("-* ").replace("text:", "").strip()
                         if clean_line and len(clean_line) > 5:
                             detected_msg = clean_line
@@ -581,31 +570,31 @@ class AutomationController:
                     break
 
             if found_otp:
-                await self.update_status("awaiting_otp", "Aadhaar OTP verification field active.")
+                await self.update_status("awaiting_otp", "Verification code / OTP field active.")
                 otp_alert = self.add_message(
                     "bot",
-                    "🔒 **Aadhaar OTP Generated!**\n\nAn OTP input has appeared on the official portal.\n\n👉 **Security Rule**: Please enter the OTP directly on the open browser window. For your privacy, never send OTPs to this chat.",
+                    "🔒 **Verification Code / OTP Detected!**\n\nA verification code field has appeared on the page.\n\n👉 **Security Rule**: Please enter verification codes directly in the open browser window. For your privacy, never send sensitive codes in chat.",
                     "otp_alert"
                 )
                 await self.broadcast_message(otp_alert)
             elif detected_msg:
                 portal_msg = self.add_message(
                     "bot",
-                    f"📢 **Portal Notification**: {detected_msg}\n\nIf OTP has already been sent to your mobile, you can enter it directly on the portal.",
+                    f"📢 **Page Notification**: {detected_msg}\n\nIf a verification code was sent to your phone or email, you can enter it directly on the webpage.",
                     "otp_alert"
                 )
                 await self.broadcast_message(portal_msg)
             else:
                 info_msg = self.add_message(
                     "bot",
-                    "The portal has processed the OTP request. Please check your mobile phone for the OTP.\n\nIf the OTP field is visible in the browser, enter it there and click **'I have entered & verified OTP'** below.",
+                    "The page has processed your action. If a verification code or next step is required, please complete it directly in the browser window.",
                     "otp_alert"
                 )
                 await self.broadcast_message(info_msg)
 
         except Exception as e:
-            logger.error(f"Failed to click OTP button: {e}")
-            msg = self.add_message("bot", f"Could not trigger button automatically: {e}. Please click **'Validate & Generate OTP'** in the browser.", "text")
+            logger.error(f"Failed to click action button: {e}")
+            msg = self.add_message("bot", f"Could not trigger button automatically: {e}. Please click the action button directly in the browser.", "text")
             await self.broadcast_message(msg)
 
     async def trigger_otp_validation(self):
@@ -649,19 +638,19 @@ class AutomationController:
         analysis = self.groq_service.analyze_page_snapshot(snapshot_text, current_url)
         self.current_analysis = analysis
 
-        # If page moved away from initial aadhaar entry or shows success
-        if "otp" not in snapshot_text.lower() or analysis.is_authenticated or analysis.step_name != "aadhaar_verification":
+        # If page moved away from initial verification or shows success
+        if "otp" not in snapshot_text.lower() or analysis.is_authenticated or analysis.step_name not in ("login", "authentication", "verification", "aadhaar_verification"):
             await self.update_status("verified", "Authentication successful! Portal accessed.", step=analysis.step_name)
             succ_msg = self.add_message(
                 "bot",
-                f"🎉 **Authentication Successful!**\n\nThe portal has accepted your verification.\n\n🌐 Current URL: `{current_url}`\n\n🔗 **[Open Udyam Registration Portal]({current_url})**\n\nThe Playwright browser session remains open for your next steps.",
+                f"🎉 **Authentication Successful!**\n\nThe website has accepted your submission.\n\n🌐 Current URL: `{current_url}`\n\n🔗 **[Open Webpage]({current_url})**\n\nThe Playwright browser session remains open for your next steps.",
                 "success_alert"
             )
             await self.broadcast_message(succ_msg)
         else:
             msg = self.add_message(
                 "bot",
-                "The portal is still waiting for OTP verification. Please enter the OTP in the browser window and click Verify, then check again.",
+                "The page is still waiting for verification. Please complete verification in the browser window and proceed.",
                 "otp_alert"
             )
             await self.broadcast_message(msg)
