@@ -5,7 +5,7 @@ import time
 
 def main():
     print("==================================================")
-    print("🚀 Starting Udyam AI Login Assistant")
+    print("🚀 Starting Universal AI Browser & Form Assistant")
     print("==================================================")
     print("Starting FastAPI Backend on http://localhost:8000 ...")
     
