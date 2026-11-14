@@ -459,5 +459,170 @@ User Question: {query}
         answered = len(session.collected_answers)
         return f"Step {curr} of {total} ({answered} collected)"
 
+    def process_uploaded_document(
+        self,
+        session_id: str,
+        document_text: str,
+        metadata: Dict[str, Any],
+        url: str = "",
+        title: str = ""
+    ) -> UniversalChatResponse:
+        """
+        Processes an uploaded document (resume, Aadhaar, ID, admission form),
+        matches it against portal requirements, automatically records valid values,
+        and asks the user 1-by-1 for any insufficient / missing fields.
+        """
+        session = conversation_manager.get_or_create_session(session_id)
+        filename = metadata.get("filename", "Uploaded Document")
+
+        # Target fields from active question queue or portal forms
+        target_fields = []
+        if session.question_queue:
+            target_fields = [
+                {"id": q.question_id, "label": q.field_name, "type": q.field_type, "mandatory": q.is_mandatory}
+                for q in session.question_queue
+            ]
+        else:
+            target_fields = [
+                {"id": "full_name", "label": "Full Name", "type": "text", "mandatory": True},
+                {"id": "email", "label": "Email Address", "type": "email", "mandatory": True},
+                {"id": "phone", "label": "Phone Number", "type": "phone", "mandatory": True},
+                {"id": "aadhaar_number", "label": "Aadhaar Number", "type": "text", "mandatory": False},
+                {"id": "pan_number", "label": "PAN Number", "type": "text", "mandatory": False},
+                {"id": "date_of_birth", "label": "Date of Birth", "type": "date", "mandatory": False},
+                {"id": "gender", "label": "Gender", "type": "select", "mandatory": False},
+                {"id": "address", "label": "Address", "type": "text", "mandatory": False},
+                {"id": "pincode", "label": "Postal / Pincode", "type": "number", "mandatory": False},
+                {"id": "qualification", "label": "Highest Qualification / Degree", "type": "text", "mandatory": False},
+                {"id": "experience_years", "label": "Total Years of Experience", "type": "number", "mandatory": False}
+            ]
+
+        doc_snippet = document_text[:14000]
+        system_prompt = """You are an intelligent document information extraction engine.
+TASK:
+Analyze the text of an uploaded document (such as a resume, Aadhaar, government ID, admission form, or profile)
+and extract matching values for the specified target fields.
+
+EXTRACTION RULES:
+1. ONLY extract values that are genuinely and clearly present in the document.
+2. If a field is not found in the document, place its field_id in the "unfound_fields" list. NEVER invent or assume values.
+3. Clean and format the extracted values cleanly (e.g. valid email, digits for phone, standard date).
+
+Return JSON:
+{
+  "extracted_fields": {
+    "field_id": "Extracted Value"
+  },
+  "unfound_fields": ["field_id_1", "field_id_2"],
+  "document_summary": "1-2 sentence overview of what document was provided"
+}"""
+
+        user_content = f"""Uploaded Document Filename: {filename}
+Target Fields Required for Current Webpage:
+{json.dumps(target_fields, indent=2)}
+
+Document Text Content:
+\"\"\"
+{doc_snippet}
+\"\"\"
+"""
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content}
+        ]
+
+        llm_data = self._call_groq_json(messages)
+        extracted = llm_data.get("extracted_fields", {})
+
+        # Map and validate extracted values into session
+        filled_count = 0
+        extracted_labels = []
+        for fid, raw_val in extracted.items():
+            if not raw_val:
+                continue
+            matched_target = next((f for f in target_fields if f["id"] == fid or f["label"].lower() == fid.lower()), None)
+            label = matched_target["label"] if matched_target else fid.replace("_", " ").title()
+            ftype = matched_target["type"] if matched_target else "text"
+
+            is_valid, cleaned, _ = AnswerValidator.validate_answer(
+                user_input=str(raw_val),
+                field_name=label,
+                field_type=ftype,
+                is_mandatory=False
+            )
+            if is_valid and cleaned:
+                session.record_answer(fid, label, cleaned, ftype)
+                filled_count += 1
+                masked = AnswerValidator.mask_sensitive_value(cleaned, ftype, label)
+                extracted_labels.append(f"**{label}**: `{masked}`")
+
+        # Find remaining unanswered questions
+        remaining_questions = []
+        if session.question_queue:
+            for q in session.question_queue:
+                if q.question_id not in session.collected_answers:
+                    remaining_questions.append(q)
+        else:
+            for unfound_id in llm_data.get("unfound_fields", []):
+                matched = next((f for f in target_fields if f["id"] == unfound_id and f.get("mandatory", True)), None)
+                if matched and matched["id"] not in session.collected_answers:
+                    remaining_questions.append(QuestionStep(
+                        question_id=matched["id"],
+                        field_name=matched["label"],
+                        question_text=f"What is your {matched['label']}?",
+                        field_type=matched["type"],
+                        explanation=f"Required by this webpage.",
+                        is_mandatory=matched.get("mandatory", True)
+                    ))
+
+        session.question_queue = remaining_questions
+        session.current_question_index = 0
+
+        # Build Conversational Bot Message
+        extracted_str = "\n- ".join(extracted_labels) if extracted_labels else "No matching fields could be automatically detected."
+        
+        if not remaining_questions:
+            session.workflow_stage = "completed"
+            bot_msg = f"📄 **Successfully processed `{filename}`!**\n\n### Extracted Information:\n- {extracted_str}\n\n🎉 **All required information for this page has been successfully extracted!**"
+            next_q = None
+        else:
+            session.workflow_stage = "question_flow"
+            next_q = remaining_questions[0]
+            missing_names = [f"**{q.field_name}**" for q in remaining_questions]
+            missing_list_str = ", ".join(missing_names)
+
+            bot_msg = (
+                f"📄 **Processed `{filename}`**\n\n"
+                f"### Auto-Filled Details:\n- {extracted_str}\n\n"
+                f"⚠️ **Insufficient Information:**\n"
+                f"The document did not contain values for: {missing_list_str}.\n\n"
+                f"Let's complete those details now:\n"
+                f"**{next_q.question_text}**"
+            )
+            if next_q.explanation:
+                bot_msg += f"\n*(Why needed: {next_q.explanation})*"
+
+        session.add_message("bot", bot_msg)
+
+        classification = session.classification or WebsiteClassification(
+            category="general",
+            page_type="application_form",
+            site_name="Portal",
+            page_purpose="Document Auto-Fill"
+        )
+
+        return UniversalChatResponse(
+            session_id=session.session_id,
+            classification=classification,
+            user_intent="fill_application",
+            assistant_message=bot_msg,
+            current_question=next_q,
+            progress_text=self._format_progress(session) if remaining_questions else "100% Completed",
+            collected_summary=session.get_collected_summary(),
+            suggested_chips=next_q.options if next_q and next_q.options else ["Upload another document", "Change a detail"],
+            workflow_stage=session.workflow_stage
+        )
+
 # Global singleton
 website_analyzer = WebsiteAnalyzer()
+

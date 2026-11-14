@@ -9,7 +9,7 @@ if sys.platform == "win32":
 
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -23,6 +23,7 @@ from backend.models import (
 )
 from backend.website_analyzer import website_analyzer
 from backend.conversation_manager import conversation_manager
+from backend.document_processor import document_processor
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("udyam_assistant")
@@ -175,6 +176,38 @@ async def chat_universal(payload: UniversalPagePayload):
     res = await asyncio.to_thread(
         website_analyzer.process_chat_message,
         payload=payload
+    )
+    return res
+
+@app.post("/api/universal/upload-document", response_model=UniversalChatResponse)
+async def upload_document_universal(
+    file: UploadFile = File(...),
+    session_id: str = Form("default_session"),
+    url: str = Form(""),
+    title: str = Form("")
+):
+    """
+    Uploads a document (PDF, DOCX, TXT), extracts information,
+    auto-fills matching portal requirements in session memory,
+    and asks the user 1-by-1 for any insufficient / missing fields.
+    """
+    logger.info(f"Received document upload '{file.filename}' for session: {session_id} on {url}")
+    contents = await file.read()
+    
+    extracted_text, metadata = await asyncio.to_thread(
+        document_processor.extract_text_from_file,
+        file_bytes=contents,
+        filename=file.filename
+    )
+    logger.info(f"Extracted {len(extracted_text)} characters from '{file.filename}' ({metadata.get('pages', 1)} pages)")
+
+    res = await asyncio.to_thread(
+        website_analyzer.process_uploaded_document,
+        session_id=session_id,
+        document_text=extracted_text,
+        metadata=metadata,
+        url=url,
+        title=title
     )
     return res
 

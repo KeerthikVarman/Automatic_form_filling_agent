@@ -41,6 +41,8 @@ const loadingText = document.getElementById('loading-text');
 const chatInput = document.getElementById('chat-input');
 const btnSend = document.getElementById('btn-send');
 const quickChips = document.getElementById('quick-chips');
+const btnUploadDoc = document.getElementById('btn-upload-doc');
+const fileDocInput = document.getElementById('file-doc-input');
 
 /**
  * Initialize Side Panel
@@ -105,6 +107,21 @@ function setupEventListeners() {
   btnSend.addEventListener('click', () => {
     handleSendMessage();
   });
+
+  // Document upload trigger button
+  if (btnUploadDoc && fileDocInput) {
+    btnUploadDoc.addEventListener('click', () => {
+      fileDocInput.click();
+    });
+
+    fileDocInput.addEventListener('change', async (e) => {
+      if (e.target.files && e.target.files.length > 0) {
+        const file = e.target.files[0];
+        await handleFileUpload(file);
+        fileDocInput.value = ''; // Reset for next upload
+      }
+    });
+  }
 
   // Quick chips
   quickChips.addEventListener('click', (e) => {
@@ -428,6 +445,47 @@ async function handleSendMessage() {
   } catch (err) {
     console.error('[Universal Assistant] Chat message failed:', err);
     appendChatMessage('bot', `⚠️ Could not process message: ${err.message}`);
+  } finally {
+    isAnalyzing = false;
+    showLoading(false);
+  }
+}
+
+/**
+ * Handle document upload and requirements extraction
+ */
+async function handleFileUpload(file) {
+  if (!file || isAnalyzing) return;
+
+  const fileSizeKb = (file.size / 1024).toFixed(1);
+  appendChatMessage('user', `📎 Uploaded Document: **${file.name}** (${fileSizeKb} KB)`);
+
+  isAnalyzing = true;
+  showLoading(true, `Reading ${file.name} & matching portal requirements...`);
+
+  try {
+    const backendUrl = await getBackendUrl();
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('session_id', currentSessionId);
+    formData.append('url', currentTabUrl || '');
+    formData.append('title', currentTabTitle || '');
+
+    const response = await fetch(`${backendUrl}/api/universal/upload-document`, {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!response.ok) {
+      throw new Error(`Upload failed (${response.status}): ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    renderUniversalResponse(data);
+
+  } catch (err) {
+    console.error('[Universal Assistant] Document upload failed:', err);
+    appendChatMessage('bot', `⚠️ **Document processing error:** ${err.message}\n\nPlease verify that the file is not corrupted or password-protected.`);
   } finally {
     isAnalyzing = false;
     showLoading(false);
