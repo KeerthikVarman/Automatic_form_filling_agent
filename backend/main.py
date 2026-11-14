@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from backend.config import STARTING_URL, BACKEND_HOST, BACKEND_PORT
 from backend.controller import AutomationController
+from backend.session_manager import session_manager
 from backend.models import (
     WebsiteContextPayload,
     WebsiteAnalysisResponse,
@@ -28,14 +29,14 @@ from backend.document_processor import document_processor
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("udyam_assistant")
 
-controller = AutomationController()
+controller = session_manager.get_controller("default_session")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting Udyam AI Login Assistant Backend...")
     yield
     logger.info("Shutting down Playwright MCP and backend...")
-    await controller.mcp_client.stop()
+    await session_manager.stop_all()
 
 app = FastAPI(title="Udyam AI Login Assistant", lifespan=lifespan)
 
@@ -87,9 +88,36 @@ async def inspect_page():
     return {"message": "Inspection initiated"}
 
 @app.post("/api/fill")
-async def fill_form():
-    asyncio.create_task(controller.fill_form_on_portal())
-    return {"message": "Form filling initiated"}
+async def fill_form(session_id: str = "default_session"):
+    ctrl = session_manager.get_controller(session_id)
+    asyncio.create_task(ctrl.fill_form_on_portal())
+    return {"message": "Form filling initiated", "session_id": session_id}
+
+class FillRequestPayload(BaseModel):
+    session_id: str = "default_session"
+    data: Optional[Dict[str, Any]] = None
+
+@app.post("/api/session/fill")
+async def execute_fill_with_data(payload: FillRequestPayload):
+    ctrl = session_manager.get_controller(payload.session_id)
+    if payload.data:
+        ctrl.collected_answers.update(payload.data)
+    asyncio.create_task(ctrl.fill_form_on_portal())
+    return {
+        "message": "Form filling triggered with Groq mapping and Playwright MCP",
+        "session_id": payload.session_id,
+        "collected_fields": list(ctrl.collected_answers.keys())
+    }
+
+@app.get("/api/session/data")
+async def get_session_data(session_id: str = "default_session"):
+    ctrl = session_manager.get_controller(session_id)
+    return {
+        "session_id": session_id,
+        "collected_answers": ctrl.collected_answers,
+        "browser_status": ctrl.browser_status.dict(),
+        "step": ctrl.current_analysis.step_name if ctrl.current_analysis else "none"
+    }
 
 @app.post("/api/trigger-otp")
 async def trigger_otp():
@@ -232,53 +260,58 @@ async def get_universal_session(session_id: str = "default_session"):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    session_id = websocket.query_params.get("session_id", "default_session")
+    ctrl = session_manager.get_controller(session_id)
     await websocket.accept()
-    controller.add_websocket(websocket)
-    logger.info("WebSocket client connected")
+    ctrl.add_websocket(websocket)
+    logger.info(f"WebSocket client connected for session: {session_id}")
 
     try:
         # Immediately push current state and history to new client
         await websocket.send_json({
             "type": "init",
             "data": {
-                "browser_status": controller.browser_status.dict(),
+                "session_id": session_id,
+                "browser_status": ctrl.browser_status.dict(),
                 "starting_url": STARTING_URL,
-                "messages": [m.dict() for m in controller.messages]
+                "messages": [m.dict() for m in ctrl.messages]
             }
         })
 
         while True:
             data = await websocket.receive_json()
+            sid = data.get("session_id", session_id)
+            active_ctrl = session_manager.get_controller(sid)
             msg_type = data.get("type")
 
             if msg_type == "user_input":
                 user_text = data.get("text", "")
-                await controller.handle_user_input(user_text)
+                await active_ctrl.handle_user_input(user_text)
 
             elif msg_type == "start_session":
-                asyncio.create_task(controller.start_session())
+                asyncio.create_task(active_ctrl.start_session())
 
             elif msg_type == "inspect_page":
-                asyncio.create_task(controller.inspect_and_analyze_page())
+                asyncio.create_task(active_ctrl.inspect_and_analyze_page())
 
             elif msg_type == "fill_form":
-                asyncio.create_task(controller.fill_form_on_portal())
+                asyncio.create_task(active_ctrl.fill_form_on_portal())
 
             elif msg_type == "trigger_otp":
-                asyncio.create_task(controller.trigger_otp_generation())
+                asyncio.create_task(active_ctrl.trigger_otp_generation())
 
             elif msg_type == "validate_otp":
-                asyncio.create_task(controller.trigger_otp_validation())
+                asyncio.create_task(active_ctrl.trigger_otp_validation())
 
             elif msg_type == "check_otp":
-                asyncio.create_task(controller.check_otp_completion())
+                asyncio.create_task(active_ctrl.check_otp_completion())
 
     except WebSocketDisconnect:
-        logger.info("WebSocket client disconnected")
-        controller.remove_websocket(websocket)
+        logger.info(f"WebSocket client disconnected for session: {session_id}")
+        ctrl.remove_websocket(websocket)
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
-        controller.remove_websocket(websocket)
+        ctrl.remove_websocket(websocket)
 
 if __name__ == "__main__":
     import uvicorn

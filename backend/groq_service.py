@@ -218,6 +218,231 @@ Analyze the snapshot and output the structured JSON analysis."""
             raw_summary="Initial Aadhaar Verification step on official Udyam Registration Portal."
         )
 
+    def map_data_to_form_fields(
+        self,
+        snapshot_text: str,
+        collected_answers: Dict[str, Any],
+        current_url: str
+    ) -> Dict[str, Any]:
+        """
+        Connects Groq with Playwright MCP:
+        Takes the live webpage accessibility snapshot and structured user data,
+        and uses Groq to map each data point to the exact interactive element ref,
+        action (fill, select, check, click), and validated value.
+        """
+        if not self.client:
+            logger.warning("GROQ_API_KEY is not configured. Falling back to rule-based mapping.")
+            return self._fallback_map_data_to_form_fields(snapshot_text, collected_answers)
+
+        cleaned_snapshot = snapshot_text[:8000]
+
+        system_prompt = """You are an expert browser automation element mapping agent.
+TASK:
+Given an accessibility snapshot of a live webpage (YAML tree containing textboxes, selects, checkboxes, buttons with [ref=...])
+and a dictionary of structured user data, map each user data point to the EXACT interactive element ref on the page.
+
+RULES:
+1. Examine labels, placeholder text, headings, and input roles in the snapshot.
+2. For each collected data field, locate the matching input element:
+   - For textboxes / input fields: action="fill", element_type="textbox"
+   - For dropdowns / comboboxes: action="select", element_type="select"
+   - For checkboxes (like agreement or consent): action="check", element_type="checkbox"
+   - For radio buttons: action="click", element_type="radio"
+3. Identify the EXACT [ref=...] identifier (e.g. "e53", "e56").
+4. If a consent, declaration, or terms checkbox exists on the page (like Aadhaar consent), include it with action="check" and value_to_fill="true".
+5. Do NOT invent references. Only use refs that appear in the snapshot.
+
+Output valid JSON matching this schema:
+{
+  "mappings": [
+    {
+      "field_key": "aadhaar_number",
+      "element_ref": "e53",
+      "element_type": "textbox",
+      "action": "fill",
+      "value_to_fill": "123456789012",
+      "label": "1. Aadhaar Number / Your Aadhaar No"
+    }
+  ],
+  "unmapped_keys": [],
+  "unfilled_required_fields": []
+}"""
+
+        user_content = f"""Current Webpage URL: {current_url}
+
+User Collected Answers (Structured Data):
+{json.dumps(collected_answers, indent=2)}
+
+Live Accessibility Snapshot:
+```yaml
+{cleaned_snapshot}
+```
+
+Map the user answers to the live snapshot elements and return the JSON mappings."""
+
+        models_to_try = [GROQ_MODEL] + [m for m in GROQ_FALLBACK_MODELS if m != GROQ_MODEL]
+        last_error = None
+
+        for model in models_to_try:
+            try:
+                logger.info(f"Mapping form fields with Groq model: {model}")
+                response = self.client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content}
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.1
+                )
+                raw_json = response.choices[0].message.content
+                data = json.loads(raw_json)
+                mappings = data.get("mappings", [])
+                if mappings:
+                    return data
+            except Exception as e:
+                logger.error(f"Error mapping form fields with {model}: {e}")
+                last_error = e
+
+        logger.warning(f"Groq field mapping fallback. Error: {last_error}")
+        return self._fallback_map_data_to_form_fields(snapshot_text, collected_answers)
+
+    def _fallback_map_data_to_form_fields(
+        self,
+        snapshot_text: str,
+        collected_answers: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Deterministic rule-based mapping fallback when LLM is unavailable or misses.
+        """
+        mappings = []
+        unmapped = []
+
+        textbox_matches = re.findall(r'textbox(?:\s+"([^"]*)")?\s*(?:\[[^\]]*\])*\s*\[ref=([a-zA-Z0-9]+)\]', snapshot_text)
+        checkbox_matches = re.findall(r'checkbox(?:\s+"([^"]*)")?\s*(?:\[[^\]]*\])*\s*\[ref=([a-zA-Z0-9]+)\]', snapshot_text)
+
+        assigned_refs = set()
+        for key, val in collected_answers.items():
+            k_lower = key.lower().replace("_", " ")
+            mapped = False
+
+            for lbl, ref in textbox_matches:
+                if ref in assigned_refs:
+                    continue
+                lbl_lower = (lbl or "").lower()
+
+                if ("aadhaar" in k_lower or "uid" in k_lower) and ("aadhaar" in lbl_lower or "uid" in lbl_lower):
+                    mappings.append({
+                        "field_key": key,
+                        "element_ref": ref,
+                        "element_type": "textbox",
+                        "action": "fill",
+                        "value_to_fill": str(val),
+                        "label": lbl or "Aadhaar Number"
+                    })
+                    assigned_refs.add(ref)
+                    mapped = True
+                    break
+
+                elif ("name" in k_lower or "entrepreneur" in k_lower or "applicant" in k_lower) and ("name" in lbl_lower or "entrepreneur" in lbl_lower or "applicant" in lbl_lower):
+                    mappings.append({
+                        "field_key": key,
+                        "element_ref": ref,
+                        "element_type": "textbox",
+                        "action": "fill",
+                        "value_to_fill": str(val),
+                        "label": lbl or "Name"
+                    })
+                    assigned_refs.add(ref)
+                    mapped = True
+                    break
+
+                elif ("mobile" in k_lower or "phone" in k_lower) and ("mobile" in lbl_lower or "phone" in lbl_lower):
+                    mappings.append({
+                        "field_key": key,
+                        "element_ref": ref,
+                        "element_type": "textbox",
+                        "action": "fill",
+                        "value_to_fill": str(val),
+                        "label": lbl or "Mobile Number"
+                    })
+                    assigned_refs.add(ref)
+                    mapped = True
+                    break
+
+                elif "pan" in k_lower and "pan" in lbl_lower:
+                    mappings.append({
+                        "field_key": key,
+                        "element_ref": ref,
+                        "element_type": "textbox",
+                        "action": "fill",
+                        "value_to_fill": str(val),
+                        "label": lbl or "PAN"
+                    })
+                    assigned_refs.add(ref)
+                    mapped = True
+                    break
+
+                elif k_lower in lbl_lower or lbl_lower in k_lower:
+                    mappings.append({
+                        "field_key": key,
+                        "element_ref": ref,
+                        "element_type": "textbox",
+                        "action": "fill",
+                        "value_to_fill": str(val),
+                        "label": lbl or key
+                    })
+                    assigned_refs.add(ref)
+                    mapped = True
+                    break
+
+            if not mapped and textbox_matches:
+                if ("aadhaar" in k_lower) and len(textbox_matches) >= 1 and textbox_matches[0][1] not in assigned_refs:
+                    ref = textbox_matches[0][1]
+                    mappings.append({
+                        "field_key": key,
+                        "element_ref": ref,
+                        "element_type": "textbox",
+                        "action": "fill",
+                        "value_to_fill": str(val),
+                        "label": textbox_matches[0][0] or "Aadhaar Number"
+                    })
+                    assigned_refs.add(ref)
+                    mapped = True
+                elif ("name" in k_lower) and len(textbox_matches) >= 2 and textbox_matches[1][1] not in assigned_refs:
+                    ref = textbox_matches[1][1]
+                    mappings.append({
+                        "field_key": key,
+                        "element_ref": ref,
+                        "element_type": "textbox",
+                        "action": "fill",
+                        "value_to_fill": str(val),
+                        "label": textbox_matches[1][0] or "Name"
+                    })
+                    assigned_refs.add(ref)
+                    mapped = True
+
+            if not mapped:
+                unmapped.append(key)
+
+        if checkbox_matches:
+            c_ref = checkbox_matches[0][1]
+            if f"[checked] [ref={c_ref}]" not in snapshot_text:
+                mappings.append({
+                    "field_key": "consent_checkbox",
+                    "element_ref": c_ref,
+                    "element_type": "checkbox",
+                    "action": "check",
+                    "value_to_fill": "true",
+                    "label": checkbox_matches[0][0] or "Consent Checkbox"
+                })
+
+        return {
+            "mappings": mappings,
+            "unmapped_keys": unmapped,
+            "unfilled_required_fields": []
+        }
+
     def analyze_website_context(
         self,
         url: str,

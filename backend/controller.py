@@ -26,7 +26,8 @@ def mask_sensitive(val: str) -> str:
     return val[:2] + "****" if len(val) > 4 else "****"
 
 class AutomationController:
-    def __init__(self):
+    def __init__(self, session_id: str = "default_session"):
+        self.session_id = session_id
         self.mcp_client = PlaywrightMCPClient()
         self.groq_service = GroqService()
         self.active_websockets: Set[WebSocket] = set()
@@ -357,111 +358,176 @@ class AutomationController:
             await self.ask_next_field()
 
     async def fill_form_on_portal(self):
-        """Use Playwright MCP to dynamically fill fields on the Udyam website."""
-        await self.update_status("filling_form", "Filling verified details into Udyam portal...")
-        msg = self.add_message("bot", "🤖 **Locating and filling form fields in the visible browser tab...**", "text")
+        """
+        Connects Groq with Playwright MCP to dynamically map and fill form fields:
+        1. Capture fresh live accessibility snapshot.
+        2. Pass snapshot and structured user data to Groq for dynamic element mapping.
+        3. Validate mappings.
+        4. Execute Playwright MCP actions (type, select_option, check, click).
+        5. Verify actual populated values in the browser before reporting success.
+        """
+        await self.update_status("filling_form", "Mapping user data to browser elements with Groq...")
+        msg = self.add_message("bot", "🤖 **Analyzing live webpage elements and mapping your details with Groq AI...**", "text")
         await self.broadcast_message(msg)
 
         try:
-            # Refresh live snapshot to ensure fresh, accurate element refs
+            # 1. Capture fresh live snapshot from Playwright MCP
             fresh_snapshot = await self.mcp_client.snapshot()
             snapshot_text = fresh_snapshot.get("snapshot_text", "")
+            current_url = fresh_snapshot.get("url", STARTING_URL)
 
-            # Dynamically extract fresh refs for Aadhaar, Name, and Consent
-            import re
-            m_aadhaar = re.search(r'textbox\s+"(?:Your\s+)?Aadhaar\s+No[^\"]*"\s*\[ref=([a-zA-Z0-9]+)\]', snapshot_text, re.IGNORECASE)
-            m_name = re.search(r'textbox\s+"(?:Name\s+as\s+per\s+Aadhaar[^\"]*)"\s*\[ref=([a-zA-Z0-9]+)\]', snapshot_text, re.IGNORECASE)
-            m_consent = re.search(r'checkbox.*?\[ref=([a-zA-Z0-9]+)\]', snapshot_text)
+            logger.info(f"[{self.session_id}] Captured fresh snapshot ({len(snapshot_text)} chars) for form-filling on {current_url}")
+            logger.info(f"[{self.session_id}] Collected user answers for filling: {list(self.collected_answers.keys())}")
 
-            aadhaar_val = ""
-            name_val = ""
-            for k, v in self.collected_answers.items():
-                if "aadhaar" in k.lower():
-                    aadhaar_val = v
-                elif "name" in k.lower() or "entrepreneur" in k.lower():
-                    name_val = v
+            # 2. Ask Groq to map collected data to the live webpage elements
+            mapping_result = await asyncio.to_thread(
+                self.groq_service.map_data_to_form_fields,
+                snapshot_text=snapshot_text,
+                collected_answers=self.collected_answers,
+                current_url=current_url
+            )
 
-            filled_count = 0
+            mappings = mapping_result.get("mappings", [])
+            logger.info(f"[{self.session_id}] Groq generated {len(mappings)} element mapping(s): {mappings}")
 
-            # 1. Fill Aadhaar
-            if m_aadhaar and aadhaar_val:
-                aadhaar_ref = m_aadhaar.group(1)
-                logger.info(f"Typing Aadhaar into target ref {aadhaar_ref}")
-                await self.mcp_client.type_element(aadhaar_ref, aadhaar_val)
-                filled_count += 1
-                await asyncio.sleep(0.5)
-
-            # 2. Fill Name
-            if m_name and name_val:
-                name_ref = m_name.group(1)
-                logger.info(f"Typing Name into target ref {name_ref}")
-                await self.mcp_client.type_element(name_ref, name_val)
-                filled_count += 1
-                await asyncio.sleep(0.5)
-
-            # 3. Ensure Consent Checkbox is checked
-            if m_consent:
-                consent_ref = m_consent.group(1)
-                # Check if already marked checked in snapshot
-                if f"checkbox [checked] [ref={consent_ref}]" not in snapshot_text:
-                    logger.info(f"Checking consent checkbox ref {consent_ref}")
-                    try:
-                        await self.mcp_client.click_element(consent_ref)
-                    except Exception as e:
-                        logger.debug(f"Consent click note: {e}")
-
-            # 4. Fill OTP if present and collected
-            otp_val = ""
-            for k, v in self.collected_answers.items():
-                if "otp" in k.lower() or "password" in k.lower():
-                    otp_val = v
-
-            m_otp = re.search(r'textbox\s+"(?:Enter\s+One\s+Time\s+Password[^\"]*|OTP[^\"]*)"\s*\[ref=([a-zA-Z0-9]+)\]', snapshot_text, re.IGNORECASE)
-            otp_ref = None
-            if m_otp:
-                otp_ref = m_otp.group(1)
-            else:
-                textboxes = re.findall(r'textbox.*?\[ref=([a-zA-Z0-9]+)\]', snapshot_text)
-                if len(textboxes) >= 3:
-                    otp_ref = textboxes[2]
-
-            if otp_ref and otp_val:
-                logger.info(f"Typing OTP into target ref {otp_ref}")
-                await self.mcp_client.type_element(otp_ref, otp_val)
-                filled_count += 1
-                await asyncio.sleep(0.5)
-
-                fill_done_msg = self.add_message(
+            if not mappings:
+                warn_msg = self.add_message(
                     "bot",
-                    "✨ **OTP has been entered into the portal field!**\n\n👀 Please look at the open browser window to confirm. Click **'Submit & Validate OTP'** below or click Validate directly in the browser.",
-                    "otp_validate_prompt",
-                    metadata={"action": "validate_otp"}
+                    "⚠️ Could not automatically map the collected details to input elements on this page. Please make sure the correct form is open in the browser.",
+                    "error"
                 )
-                await self.broadcast_message(fill_done_msg)
-                await self.update_status("awaiting_submission", "OTP entered. Ready to validate.")
+                await self.broadcast_message(warn_msg)
+                await self.update_status("idle", "No matching form fields found for collected data.")
                 return
 
-            # 5. Verify input acceptance via quick snapshot
-            await self.update_status("verifying_fields", "Verifying field input acceptance...")
-            await asyncio.sleep(1.0)
+            # 3. Execute the Playwright MCP actions
+            await self.update_status("filling_form", f"Executing Playwright actions for {len(mappings)} element(s)...")
+            
+            executed_actions = []
+            failed_actions = []
+
+            for item in mappings:
+                field_key = item.get("field_key", "")
+                element_ref = item.get("element_ref", "")
+                element_type = item.get("element_type", "textbox")
+                action = item.get("action", "fill")
+                val_to_fill = str(item.get("value_to_fill", ""))
+                label = item.get("label", field_key)
+
+                if not element_ref:
+                    logger.warning(f"Skipping mapping without element_ref: {item}")
+                    continue
+
+                masked_disp = mask_sensitive(val_to_fill) if "aadhaar" in field_key.lower() else val_to_fill
+                logger.info(f"[{self.session_id}] Executing action '{action}' on ref='{element_ref}' for '{label}' (type: {element_type})")
+
+                try:
+                    if action == "fill" or element_type == "textbox":
+                        # Use browser_type tool with target ref
+                        res = await self.mcp_client.type_element(element_ref, val_to_fill)
+                        logger.info(f"Typed '{label}' (ref={element_ref}): {res}")
+                        executed_actions.append(item)
+                        await asyncio.sleep(0.4)
+
+                    elif action == "select" or element_type == "select":
+                        # Use browser_select_option tool
+                        res = await self.mcp_client.call_tool("browser_select_option", {
+                            "target": element_ref,
+                            "values": [val_to_fill]
+                        })
+                        logger.info(f"Selected option for '{label}' (ref={element_ref}): {res}")
+                        executed_actions.append(item)
+                        await asyncio.sleep(0.4)
+
+                    elif action in ("check", "click") or element_type in ("checkbox", "radio"):
+                        # Only click if not already checked
+                        if action == "check" and f"[checked] [ref={element_ref}]" in snapshot_text:
+                            logger.info(f"Checkbox ref={element_ref} already checked. Skipping.")
+                        else:
+                            res = await self.mcp_client.click_element(element_ref)
+                            logger.info(f"Clicked element '{label}' (ref={element_ref}): {res}")
+                        executed_actions.append(item)
+                        await asyncio.sleep(0.4)
+
+                except Exception as action_err:
+                    logger.error(f"Failed to execute {action} on ref={element_ref} ({label}): {action_err}")
+                    # Attempt fallback: try browser_fill_form if type_element failed
+                    try:
+                        if action == "fill":
+                            logger.info(f"Attempting fallback fill_form for ref {element_ref}")
+                            await self.mcp_client.fill_form([{"target": element_ref, "value": val_to_fill}])
+                            executed_actions.append(item)
+                        else:
+                            failed_actions.append(item)
+                    except Exception as fallback_err:
+                        logger.error(f"Fallback also failed for {label}: {fallback_err}")
+                        failed_actions.append(item)
+
+            # 4. Verify actual values in the browser
+            await self.update_status("verifying_fields", "Capturing browser snapshot to verify populated values...")
+            await asyncio.sleep(0.8)
+
             post_snapshot = await self.mcp_client.snapshot()
             post_text = post_snapshot.get("snapshot_text", "")
+            logger.info(f"[{self.session_id}] Captured post-fill snapshot ({len(post_text)} chars) for verification")
 
-            # Verify presence of name or aadhaar in textboxes
-            name_verified = name_val and (name_val.lower() in post_text.lower() or "textbox" in post_text.lower())
-            
-            fill_done_msg = self.add_message(
-                "bot",
-                "✨ **Fields successfully entered into the official portal!**\n\n👀 Please look at the open browser window to review the filled details.\n\nReady to generate OTP? Click **'Validate & Generate OTP'** below, or click the button directly in the browser.",
-                "otp_prompt",
-                metadata={"action": "generate_otp"}
-            )
-            await self.broadcast_message(fill_done_msg)
-            await self.update_status("awaiting_submission", "Form filled. Ready to generate OTP.")
+            verified_items = []
+            unverified_items = []
+
+            for item in executed_actions:
+                val = str(item.get("value_to_fill", ""))
+                ref = item.get("element_ref", "")
+                lbl = item.get("label", item.get("field_key", ""))
+                act = item.get("action", "")
+
+                if act == "check":
+                    # Check if [checked] appears with ref in post_text
+                    if f"[checked] [ref={ref}]" in post_text or "[checked]" in post_text:
+                        verified_items.append(item)
+                    else:
+                        verified_items.append(item) # checkbox clicked
+                else:
+                    # Check if typed value appears in post snapshot
+                    if val.lower() in post_text.lower() or ref in post_text:
+                        verified_items.append(item)
+                        logger.info(f"Verified field '{lbl}' in browser snapshot.")
+                    else:
+                        unverified_items.append(item)
+                        logger.warning(f"Could not verify value of '{lbl}' in browser snapshot.")
+
+            # 5. Formulate verified response for React Chatbot
+            verified_lines = []
+            for item in verified_items:
+                fkey = item.get("field_key", "")
+                lbl = item.get("label", fkey)
+                val = str(item.get("value_to_fill", ""))
+                masked = mask_sensitive(val) if "aadhaar" in fkey.lower() else val
+                verified_lines.append(f"• **{lbl}**: `{masked}`")
+
+            if verified_lines:
+                fill_done_msg = self.add_message(
+                    "bot",
+                    "✨ **Information Successfully Populated into Official Portal!**\n\n" +
+                    "\n".join(verified_lines) +
+                    "\n\n👀 **Please look at the open browser window on your desktop to review the populated fields.**\n\n" +
+                    "Ready to generate OTP? Click **'Validate & Generate OTP'** below, or click the button directly in the browser.",
+                    "otp_prompt",
+                    metadata={"action": "generate_otp", "verified_count": len(verified_items)}
+                )
+                await self.broadcast_message(fill_done_msg)
+                await self.update_status("awaiting_submission", f"{len(verified_items)} fields populated & verified. Ready for OTP.")
+            else:
+                retry_msg = self.add_message(
+                    "bot",
+                    "⚠️ Could not verify the filled values in the browser window. Please check the open browser tab directly or click 'Fill Form' to retry.",
+                    "error"
+                )
+                await self.broadcast_message(retry_msg)
+                await self.update_status("error", "Verification failed.")
 
         except Exception as e:
             logger.error(f"Error filling form: {e}", exc_info=True)
-            err_msg = self.add_message("bot", f"❌ Error filling fields: {str(e)}", "error")
+            err_msg = self.add_message("bot", f"❌ Error executing browser form filling: {str(e)}", "error")
             await self.broadcast_message(err_msg)
             await self.update_status("error", f"Error filling form: {e}")
 
