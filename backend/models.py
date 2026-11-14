@@ -49,3 +49,26 @@ class BrowserStatus(BaseModel):
     detected_step: str = "none"
     last_updated: float = 0.0
 
+class WebsiteContextPayload(BaseModel):
+    url: str
+    title: str = ""
+    headings: List[str] = []
+    page_text: str = ""
+    form_elements: Optional[List[Dict[str, Any]]] = None
+    question: Optional[str] = None
+    conversation_history: Optional[List[Dict[str, str]]] = None
+
+class RequirementsBreakdown(BaseModel):
+    eligibility: List[str] = []
+    required_documents: List[str] = []
+    key_form_fields: List[str] = []
+    procedure_steps: List[str] = []
+
+class WebsiteAnalysisResponse(BaseModel):
+    summary: str = ""
+    portal_purpose: str = ""
+    requirements: RequirementsBreakdown = Field(default_factory=RequirementsBreakdown)
+    answer: str = ""
+    unsupported_info: List[str] = []
+
+

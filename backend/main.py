@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from backend.config import STARTING_URL, BACKEND_HOST, BACKEND_PORT
 from backend.controller import AutomationController
+from backend.models import WebsiteContextPayload, WebsiteAnalysisResponse
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("udyam_assistant")
@@ -97,6 +98,44 @@ async def stop_session():
     await controller.mcp_client.stop()
     await controller.update_status("idle", "Browser closed.")
     return {"message": "Browser session stopped"}
+
+@app.post("/api/sidepanel/analyze", response_model=WebsiteAnalysisResponse)
+async def analyze_sidepanel_context(payload: WebsiteContextPayload):
+    """
+    Analyzes active webpage context sent from Chrome Side Panel.
+    Extracts portal purpose, eligibility criteria, required documents, key form fields,
+    and step-by-step procedures using Groq LLM.
+    """
+    logger.info(f"SidePanel analysis requested for URL: {payload.url} | Title: {payload.title}")
+    res = await asyncio.to_thread(
+        controller.groq_service.analyze_website_context,
+        url=payload.url,
+        title=payload.title,
+        headings=payload.headings,
+        page_text=payload.page_text,
+        form_elements=payload.form_elements or [],
+        question=payload.question,
+        history=payload.conversation_history or []
+    )
+    return res
+
+@app.post("/api/sidepanel/chat", response_model=WebsiteAnalysisResponse)
+async def chat_sidepanel(payload: WebsiteContextPayload):
+    """
+    Answers user follow-up questions in the Chrome Side Panel grounded strictly in the webpage context.
+    """
+    logger.info(f"SidePanel chat inquiry: '{payload.question}' for URL: {payload.url}")
+    res = await asyncio.to_thread(
+        controller.groq_service.analyze_website_context,
+        url=payload.url,
+        title=payload.title,
+        headings=payload.headings,
+        page_text=payload.page_text,
+        form_elements=payload.form_elements or [],
+        question=payload.question,
+        history=payload.conversation_history or []
+    )
+    return res
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
