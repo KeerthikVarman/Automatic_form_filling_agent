@@ -1,20 +1,22 @@
 /**
- * Udyam AI Assistant - Chrome Side Panel Script
- * Manifest V3 compatible
+ * Universal AI Browser Assistant - Side Panel Script
+ * Website-Aware Interactive Chatbot (Manifest V3)
  */
 
-import { getBackendUrl, getActiveUrl } from './config.js';
+import { getBackendUrl } from './config.js';
 
-// Global state
+// Global State
 let currentTabId = null;
 let currentTabUrl = '';
 let currentTabTitle = '';
 let currentExtractedContext = null;
-let conversationHistory = [];
+let currentSessionId = 'browser_session_' + Math.random().toString(36).substring(2, 9);
 let isAnalyzing = false;
+let currentClassification = null;
 
 // DOM Elements
 const backendStatusDot = document.getElementById('backend-status-dot');
+const siteCategoryTag = document.getElementById('site-category-tag');
 const siteTitleText = document.getElementById('site-title-text');
 const siteUrlLink = document.getElementById('site-url-link');
 const contextBadge = document.getElementById('context-badge');
@@ -23,25 +25,25 @@ const badgeText = document.getElementById('badge-text');
 const contextStats = document.getElementById('context-stats');
 const btnRefresh = document.getElementById('btn-refresh');
 const refreshIcon = document.getElementById('refresh-icon');
+const btnClearSession = document.getElementById('btn-clear-session');
 const restrictedNotice = document.getElementById('restricted-notice');
-const requirementsBox = document.getElementById('requirements-box');
-const requirementsToggle = document.getElementById('requirements-toggle');
-const requirementsContent = document.getElementById('requirements-content');
-const toggleArrow = document.getElementById('toggle-arrow');
-const reqPurposeText = document.getElementById('req-purpose-text');
-const reqEligibilityList = document.getElementById('req-eligibility-list');
-const reqDocsList = document.getElementById('req-docs-list');
-const reqFieldsList = document.getElementById('req-fields-list');
-const reqProcedureList = document.getElementById('req-procedure-list');
+const progressBarContainer = document.getElementById('progress-bar-container');
+const progressLabel = document.getElementById('progress-label');
+const progressFill = document.getElementById('progress-fill');
+const drawerCollected = document.getElementById('drawer-collected');
+const drawerToggle = document.getElementById('drawer-toggle');
+const drawerItems = document.getElementById('drawer-items');
+const drawerCount = document.getElementById('drawer-count');
+const drawerArrow = document.getElementById('drawer-arrow');
 const chatContainer = document.getElementById('chat-container');
 const loadingIndicator = document.getElementById('loading-indicator');
+const loadingText = document.getElementById('loading-text');
 const chatInput = document.getElementById('chat-input');
 const btnSend = document.getElementById('btn-send');
 const quickChips = document.getElementById('quick-chips');
-const btnOpenApp = document.getElementById('btn-open-app');
 
 /**
- * Initialize on load
+ * Initialize Side Panel
  */
 document.addEventListener('DOMContentLoaded', async () => {
   setupEventListeners();
@@ -50,14 +52,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Listen for tab switch or updates
   if (chrome.tabs) {
-    chrome.tabs.onActivated.addListener(async (activeInfo) => {
-      // Debounce slightly to allow page render
+    chrome.tabs.onActivated.addListener(async () => {
       setTimeout(async () => {
         await captureAndAnalyzeActiveTab();
-      }, 400);
+      }, 350);
     });
 
-    chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+    chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
       if (tabId === currentTabId && changeInfo.status === 'complete') {
         await captureAndAnalyzeActiveTab();
       }
@@ -66,14 +67,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 /**
- * Event Listeners
+ * Setup Event Listeners
  */
 function setupEventListeners() {
-  // Toggle requirements accordion
-  requirementsToggle.addEventListener('click', () => {
-    const isHidden = requirementsContent.style.display === 'none';
-    requirementsContent.style.display = isHidden ? 'flex' : 'none';
-    toggleArrow.classList.toggle('open', isHidden);
+  // Toggle collected details drawer
+  drawerToggle.addEventListener('click', () => {
+    const isVisible = drawerItems.style.display !== 'none';
+    drawerItems.style.display = isVisible ? 'none' : 'flex';
+    drawerArrow.textContent = isVisible ? '▶' : '▼';
   });
 
   // Refresh context button
@@ -81,14 +82,9 @@ function setupEventListeners() {
     await captureAndAnalyzeActiveTab(true);
   });
 
-  // Open full web app
-  btnOpenApp.addEventListener('click', async () => {
-    try {
-      const appUrl = await getActiveUrl();
-      chrome.tabs.create({ url: appUrl });
-    } catch (e) {
-      window.open('http://localhost:5173', '_blank');
-    }
+  // Clear conversation session
+  btnClearSession.addEventListener('click', async () => {
+    await clearSession();
   });
 
   // Send message on Enter (Shift+Enter for newline)
@@ -99,18 +95,18 @@ function setupEventListeners() {
     }
   });
 
-  // Auto-resize textarea
+  // Auto-resize input
   chatInput.addEventListener('input', () => {
     chatInput.style.height = 'auto';
     chatInput.style.height = Math.min(chatInput.scrollHeight, 100) + 'px';
   });
 
-  // Send button click
+  // Send button
   btnSend.addEventListener('click', () => {
     handleSendMessage();
   });
 
-  // Quick chips click
+  // Quick chips
   quickChips.addEventListener('click', (e) => {
     const chip = e.target.closest('.chip-btn');
     if (chip && chip.dataset.query) {
@@ -121,7 +117,7 @@ function setupEventListeners() {
 }
 
 /**
- * Check if backend is alive
+ * Check backend health
  */
 async function checkBackendStatus() {
   try {
@@ -133,7 +129,7 @@ async function checkBackendStatus() {
       return true;
     }
   } catch (err) {
-    console.warn('[Udyam Side Panel] Backend offline:', err);
+    console.warn('[Universal Assistant] Backend offline:', err);
   }
   backendStatusDot.className = 'status-dot offline';
   backendStatusDot.title = 'Backend: Disconnected. Run "python start.py"';
@@ -141,7 +137,7 @@ async function checkBackendStatus() {
 }
 
 /**
- * Detect active tab and extract page content
+ * Capture and Analyze Active Tab Content
  */
 async function captureAndAnalyzeActiveTab(isManualRefresh = false) {
   if (isAnalyzing && !isManualRefresh) return;
@@ -151,221 +147,229 @@ async function captureAndAnalyzeActiveTab(isManualRefresh = false) {
     if (!tabs || tabs.length === 0) return;
 
     const activeTab = tabs[0];
+    const previousUrl = currentTabUrl;
     currentTabId = activeTab.id;
     currentTabUrl = activeTab.url || '';
     currentTabTitle = activeTab.title || 'Untitled Page';
 
-    // Update URL and Title in UI
     siteTitleText.textContent = currentTabTitle;
     siteUrlLink.textContent = currentTabUrl;
     siteUrlLink.href = currentTabUrl;
 
-    // Check if URL is restricted
     if (isRestrictedUrl(currentTabUrl)) {
       showRestrictedBanner(true);
-      setContextBadge('warning', 'Restricted Page', 'Cannot extract browser internal pages');
+      setContextBadge('warning', 'Restricted Page', 'Chrome internal pages cannot be analyzed.');
+      siteCategoryTag.textContent = '🔒 Restricted Page';
       return;
     }
 
     showRestrictedBanner(false);
-    setContextBadge('normal', 'Extracting...', 'Reading webpage content');
+    setContextBadge('normal', 'Extracting...', 'Reading live page DOM and inputs');
 
-    // Run extraction script on active tab
+    // Run robust live in-tab extractor
     const extractionResults = await chrome.scripting.executeScript({
       target: { tabId: currentTabId },
-      func: inTabExtractor
+      func: robustLiveDomExtractor
     });
 
     if (!extractionResults || !extractionResults[0] || !extractionResults[0].result) {
-      setContextBadge('warning', 'Extraction Failed', 'No content accessible');
+      setContextBadge('warning', 'Extraction Warning', 'Could not read DOM');
       return;
     }
 
     const context = extractionResults[0].result;
     currentExtractedContext = context;
 
-    // Update stats
-    const wordCount = context.page_text ? context.page_text.trim().split(/\s+/).length : 0;
+    // Display accurate stats
+    const wordCount = context.page_text ? context.page_text.trim().split(/\s+/).filter(Boolean).length : 0;
     const headingCount = context.headings ? context.headings.length : 0;
-    contextStats.textContent = `${wordCount} words • ${headingCount} headings`;
-    setContextBadge('success', 'Context Captured', `${wordCount} words ready for AI analysis`);
+    const formCount = context.form_elements ? context.form_elements.length : 0;
 
-    // Reset conversation history for new page unless refreshing manually
-    if (!isManualRefresh) {
-      conversationHistory = [];
+    contextStats.textContent = `${wordCount.toLocaleString()} words • ${headingCount} headings • ${formCount} inputs`;
+    setContextBadge('success', 'Context Captured', `${wordCount} words extracted from live DOM`);
+
+    // If navigating to a brand new website/domain and not refreshing, clear chat history visually
+    const isNewDomain = previousUrl && (new URL(previousUrl).origin !== new URL(currentTabUrl).origin);
+    if (isNewDomain && !isManualRefresh) {
       chatContainer.innerHTML = '';
+      currentSessionId = 'browser_session_' + Math.random().toString(36).substring(2, 9);
     }
 
-    // Trigger AI analysis on backend
-    await analyzeContextWithBackend(context);
+    // Call backend universal analyzer
+    await analyzePageWithBackend(context);
 
   } catch (err) {
-    console.error('[Udyam Side Panel] Tab extraction error:', err);
-    setContextBadge('error', 'Error', err.message || 'Failed to capture tab');
+    console.error('[Universal Assistant] Extraction error:', err);
+    setContextBadge('error', 'Extraction Error', err.message);
   }
 }
 
 /**
- * Checks if a URL cannot have scripts injected
+ * Robust in-tab extractor executed directly in active tab's live DOM
  */
-function isRestrictedUrl(url) {
-  if (!url) return true;
-  return (
-    url.startsWith('chrome://') ||
-    url.startsWith('chrome-extension://') ||
-    url.startsWith('edge://') ||
-    url.startsWith('about:') ||
-    url.startsWith('view-source:') ||
-    url.startsWith('devtools://')
-  );
-}
-
-function showRestrictedBanner(show) {
-  restrictedNotice.style.display = show ? 'block' : 'none';
-  if (show) {
-    reqPurposeText.textContent = 'Chrome internal page cannot be analyzed. Open an external website.';
-    reqEligibilityList.innerHTML = '<li>Not applicable on restricted browser URLs.</li>';
-    reqDocsList.innerHTML = '<li>Not applicable on restricted browser URLs.</li>';
-    reqFieldsList.innerHTML = '<li>Not applicable on restricted browser URLs.</li>';
-    reqProcedureList.innerHTML = '<li>Not applicable on restricted browser URLs.</li>';
-  }
-}
-
-function setContextBadge(type, title, subtitle) {
-  contextBadge.className = 'badge-status';
-  if (type === 'warning') contextBadge.classList.add('warning');
-  if (type === 'error') contextBadge.classList.add('error');
-
-  badgeText.textContent = title;
-  badgeIcon.textContent = type === 'error' ? '✖' : (type === 'warning' ? '▲' : '●');
-  if (subtitle) contextBadge.title = subtitle;
-}
-
-/**
- * In-Tab Content Extractor (Executed in tab context)
- */
-function inTabExtractor() {
+function robustLiveDomExtractor() {
   const url = window.location.href;
   const title = document.title || '';
 
-  // 1. Extract Headings (h1 - h4)
-  const headingElements = Array.from(document.querySelectorAll('h1, h2, h3, h4'));
-  const headings = headingElements
-    .map(h => h.innerText ? h.innerText.trim() : '')
-    .filter(t => t.length > 0 && t.length < 200)
-    .slice(0, 30);
-
-  // 2. Extract Visible Clean Text
-  function getCleanBodyText() {
-    const clone = document.body.cloneNode(true);
-    // Remove scripts, styles, iframes, svgs, noscripts
-    const toRemove = clone.querySelectorAll('script, style, noscript, svg, canvas, iframe, link, meta');
-    toRemove.forEach(el => el.remove());
-
-    const text = clone.innerText || clone.textContent || '';
-    // Normalize extra whitespace
-    return text.replace(/\r\n|\r/g, '\n').replace(/\n\s*\n\s*\n/g, '\n\n').trim();
+  // 1. Meta Description & OpenGraph Tags
+  let meta_description = '';
+  const metaDescTag = document.querySelector('meta[name="description"]') || document.querySelector('meta[property="og:description"]');
+  if (metaDescTag) {
+    meta_description = metaDescTag.getAttribute('content') || '';
   }
 
-  const rawText = getCleanBodyText();
-  // Safe limit around 15,000 characters
-  const page_text = rawText.slice(0, 15000);
+  // 2. Headings & Subheadings
+  const headingElements = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, [role="heading"]'));
+  const headings = [];
+  const seenHeadings = new Set();
+  headingElements.forEach(h => {
+    const text = (h.innerText || h.textContent || '').replace(/\s+/g, ' ').trim();
+    if (text.length > 1 && text.length < 250 && !seenHeadings.has(text.toLowerCase())) {
+      seenHeadings.add(text.toLowerCase());
+      headings.push(text);
+    }
+  });
 
-  // 3. Extract Form Elements & Labels
+  // 3. Extract Clean Visible Text from LIVE DOM (Fixes cloneNode.innerText empty bug)
+  function extractLiveText() {
+    // Primary: use live body innerText which is render-aware
+    if (document.body && document.body.innerText && document.body.innerText.trim().length > 40) {
+      return document.body.innerText
+        .replace(/\r\n|\r/g, '\n')
+        .replace(/\n\s*\n\s*\n/g, '\n\n')
+        .trim();
+    }
+
+    // Fallback: TreeWalker for SPAs or hidden text nodes
+    const walker = document.createTreeWalker(
+      document.body || document.documentElement,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode(node) {
+          if (!node.parentElement) return NodeFilter.FILTER_REJECT;
+          const tag = node.parentElement.tagName.toLowerCase();
+          if (['script', 'style', 'noscript', 'svg', 'canvas', 'template'].includes(tag)) {
+            return NodeFilter.FILTER_REJECT;
+          }
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      }
+    );
+
+    let textAcc = '';
+    let curr = walker.nextNode();
+    while (curr) {
+      const v = curr.nodeValue ? curr.nodeValue.trim() : '';
+      if (v) textAcc += v + ' ';
+      curr = walker.nextNode();
+    }
+    return textAcc.trim();
+  }
+
+  const rawText = extractLiveText();
+  const page_text = rawText.slice(0, 16000);
+
+  // 4. Form Elements, Labels, Placeholders, Options & Buttons
   const form_elements = [];
   try {
-    const inputs = document.querySelectorAll('input:not([type="hidden"]), select, textarea, button');
-    inputs.forEach((el, index) => {
-      if (index > 40) return; // Cap at 40 elements
+    const elements = document.querySelectorAll('input:not([type="hidden"]), select, textarea, button, [role="button"]');
+    elements.forEach((el, index) => {
+      if (index > 45) return;
       const tag = el.tagName.toLowerCase();
-      const type = el.getAttribute('type') || (tag === 'select' ? 'select' : (tag === 'textarea' ? 'textarea' : 'button'));
+      let type = el.getAttribute('type') || (tag === 'select' ? 'select' : (tag === 'textarea' ? 'textarea' : 'button'));
+      type = type.toLowerCase();
       const id = el.id || '';
       const name = el.getAttribute('name') || '';
       const placeholder = el.getAttribute('placeholder') || '';
       const required = el.required || el.getAttribute('aria-required') === 'true';
 
-      // Find associated label
+      // Associate label
       let label = '';
       if (id) {
         const lbl = document.querySelector(`label[for="${id}"]`);
-        if (lbl) label = lbl.innerText.trim();
+        if (lbl) label = (lbl.innerText || lbl.textContent || '').trim();
       }
       if (!label && el.closest('label')) {
-        label = el.closest('label').innerText.trim();
+        label = (el.closest('label').innerText || el.closest('label').textContent || '').trim();
       }
-      if (!label && placeholder) {
-        label = placeholder;
+      if (!label && placeholder) label = placeholder;
+      if (!label && el.getAttribute('aria-label')) label = el.getAttribute('aria-label');
+      if (!label && (tag === 'button' || type === 'submit')) {
+        label = (el.innerText || el.textContent || '').trim();
       }
-      if (!label && el.getAttribute('aria-label')) {
-        label = el.getAttribute('aria-label');
-      }
-      if (!label && tag === 'button') {
-        label = el.innerText.trim();
+
+      // Dropdown options
+      let options = null;
+      if (tag === 'select') {
+        options = Array.from(el.querySelectorAll('option'))
+          .map(opt => (opt.innerText || opt.textContent || '').trim())
+          .filter(Boolean)
+          .slice(0, 15);
       }
 
       form_elements.push({
         tag: tag,
         type: type,
         name: name,
+        id: id,
         label: label.slice(0, 80),
         placeholder: placeholder.slice(0, 80),
-        required: required
+        required: required,
+        options: options
       });
     });
   } catch (e) {
-    // Continue even if form inspection fails
+    // Continue
   }
 
   return {
     url: url,
     title: title,
-    headings: headings,
+    meta_description: meta_description,
+    headings: headings.slice(0, 30),
     page_text: page_text,
     form_elements: form_elements
   };
 }
 
 /**
- * Call backend to analyze the extracted context
+ * Call backend to analyze the page
  */
-async function analyzeContextWithBackend(context) {
+async function analyzePageWithBackend(context) {
   isAnalyzing = true;
-  showLoading(true);
+  showLoading(true, 'AI is understanding this website...');
   btnRefresh.disabled = true;
   refreshIcon.textContent = '⏳';
 
   try {
     const backendUrl = await getBackendUrl();
     const payload = {
+      session_id: currentSessionId,
       url: context.url,
       title: context.title,
+      meta_description: context.meta_description,
       headings: context.headings,
       page_text: context.page_text,
       form_elements: context.form_elements,
-      question: null,
-      conversation_history: []
+      user_message: null
     };
 
-    const response = await fetch(`${backendUrl}/api/sidepanel/analyze`, {
+    const response = await fetch(`${backendUrl}/api/universal/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
 
     if (!response.ok) {
-      throw new Error(`Backend error (${response.status}): ${response.statusText}`);
+      throw new Error(`Server returned ${response.status}: ${response.statusText}`);
     }
 
     const data = await response.json();
-    renderAnalysisResults(data);
-
-    // Add initial AI Assistant greeting message
-    const initialGreeting = data.answer || `${data.summary}\n\nI have extracted the portal requirements, eligibility criteria, and documents above. How can I assist you with this application?`;
-    appendChatMessage('bot', initialGreeting);
+    renderUniversalResponse(data);
 
   } catch (err) {
-    console.error('[Udyam Side Panel] Analysis request failed:', err);
-    appendChatMessage('bot', `⚠️ **Could not connect to AI backend.**\n\nPlease ensure your backend server is running:\n\`\`\`\npython start.py\n\`\`\`\nError details: ${err.message}`);
+    console.error('[Universal Assistant] Backend analysis failed:', err);
+    appendChatMessage('bot', `⚠️ **Could not connect to AI backend.**\n\nPlease ensure your server is running:\n\`\`\`\npython start.py\n\`\`\`\n*Details: ${err.message}*`);
     setContextBadge('error', 'Backend Error', err.message);
   } finally {
     isAnalyzing = false;
@@ -376,81 +380,39 @@ async function analyzeContextWithBackend(context) {
 }
 
 /**
- * Render structured requirements breakdown in accordion
- */
-function renderAnalysisResults(data) {
-  // 1. Purpose / Summary
-  reqPurposeText.textContent = data.portal_purpose || data.summary || 'Overview not available.';
-
-  // 2. Eligibility
-  const eligibility = data.requirements && data.requirements.eligibility;
-  renderList(reqEligibilityList, eligibility, 'No specific eligibility restrictions specified on this page.');
-
-  // 3. Required Documents
-  const docs = data.requirements && data.requirements.required_documents;
-  renderList(reqDocsList, docs, 'No specific documents explicitly listed on this page.');
-
-  // 4. Key Form Fields
-  const fields = data.requirements && data.requirements.key_form_fields;
-  renderList(reqFieldsList, fields, 'No form input requirements detected.');
-
-  // 5. Procedure Steps
-  const steps = data.requirements && data.requirements.procedure_steps;
-  renderList(reqProcedureList, steps, 'Step-by-step procedure not explicitly outlined on this page.');
-}
-
-function renderList(listEl, items, emptyText) {
-  listEl.innerHTML = '';
-  if (items && Array.isArray(items) && items.length > 0) {
-    items.forEach(item => {
-      const li = document.createElement('li');
-      li.textContent = item;
-      listEl.appendChild(li);
-    });
-  } else {
-    const li = document.createElement('li');
-    li.style.color = '#94a3b8';
-    li.textContent = emptyText;
-    listEl.appendChild(li);
-  }
-}
-
-/**
- * User Chat message handling
+ * Send user message to universal chatbot
  */
 async function handleSendMessage() {
   const query = chatInput.value.trim();
   if (!query || isAnalyzing) return;
 
-  // Clear input
   chatInput.value = '';
   chatInput.style.height = 'auto';
 
-  // Append user bubble
   appendChatMessage('user', query);
 
-  // Check if we have context
   if (!currentExtractedContext || !currentExtractedContext.page_text) {
-    appendChatMessage('bot', 'Please navigate to a valid web page or click "Refresh Context" first so I can inspect the page content.');
+    appendChatMessage('bot', 'Please navigate to a valid web page or click "Refresh" first so I can inspect the page content.');
     return;
   }
 
   isAnalyzing = true;
-  showLoading(true);
+  showLoading(true, 'AI is validating and processing your answer...');
 
   try {
     const backendUrl = await getBackendUrl();
     const payload = {
+      session_id: currentSessionId,
       url: currentExtractedContext.url,
       title: currentExtractedContext.title,
+      meta_description: currentExtractedContext.meta_description,
       headings: currentExtractedContext.headings,
       page_text: currentExtractedContext.page_text,
       form_elements: currentExtractedContext.form_elements,
-      question: query,
-      conversation_history: conversationHistory
+      user_message: query
     };
 
-    const response = await fetch(`${backendUrl}/api/sidepanel/chat`, {
+    const response = await fetch(`${backendUrl}/api/universal/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -461,12 +423,11 @@ async function handleSendMessage() {
     }
 
     const data = await response.json();
-    const botReply = data.answer || data.summary || 'I analyzed the page context, but could not produce a specific response.';
-    appendChatMessage('bot', botReply);
+    renderUniversalResponse(data);
 
   } catch (err) {
-    console.error('[Udyam Side Panel] Chat inquiry failed:', err);
-    appendChatMessage('bot', `⚠️ Could not get AI response: ${err.message}. Please check if the backend server is running.`);
+    console.error('[Universal Assistant] Chat message failed:', err);
+    appendChatMessage('bot', `⚠️ Could not process message: ${err.message}`);
   } finally {
     isAnalyzing = false;
     showLoading(false);
@@ -474,7 +435,124 @@ async function handleSendMessage() {
 }
 
 /**
- * Append message to chat container
+ * Render structured universal response from backend
+ */
+function renderUniversalResponse(data) {
+  if (data.classification) {
+    currentClassification = data.classification;
+    updateCategoryTag(data.classification);
+  }
+
+  // Append assistant message
+  if (data.assistant_message) {
+    appendChatMessage('bot', data.assistant_message);
+  }
+
+  // Update Progress Bar
+  if (data.progress_text) {
+    progressBarContainer.style.display = 'flex';
+    progressLabel.textContent = data.progress_text;
+    const match = data.progress_text.match(/Step\s+(\d+)\s+of\s+(\d+)/i);
+    if (match) {
+      const curr = parseInt(match[1], 10);
+      const total = parseInt(match[2], 10);
+      const pct = Math.round((curr / total) * 100);
+      progressFill.style.width = `${pct}%`;
+    } else {
+      progressFill.style.width = '100%';
+    }
+  } else {
+    progressBarContainer.style.display = 'none';
+  }
+
+  // Update Collected Details Drawer
+  updateCollectedDrawer(data.collected_summary);
+
+  // Update Suggested Chips
+  renderChips(data.suggested_chips);
+}
+
+/**
+ * Update Category Tag Badge
+ */
+function updateCategoryTag(classification) {
+  const cat = classification.category || 'general';
+  const site = classification.site_name || 'Website';
+
+  const icons = {
+    government_portal: '🏛️ Gov Portal',
+    job_portal: '💼 Careers & Jobs',
+    university_admissions: '🎓 Admissions',
+    ecommerce: '🛒 E-Commerce',
+    banking_finance: '🏦 Banking & Finance',
+    service_booking: '✈️ Booking & Travel',
+    documentation_info: '📖 Documentation',
+    general_saas: '⚙️ Web App / SaaS'
+  };
+
+  const label = icons[cat] || '🌐 Website';
+  siteCategoryTag.textContent = `${label} • ${site}`;
+}
+
+/**
+ * Update Collected Information Drawer
+ */
+function updateCollectedDrawer(collectedSummary) {
+  if (!collectedSummary || Object.keys(collectedSummary).length === 0) {
+    drawerCollected.style.display = 'none';
+    return;
+  }
+
+  drawerCollected.style.display = 'block';
+  const keys = Object.keys(collectedSummary);
+  drawerCount.textContent = keys.length;
+
+  drawerItems.innerHTML = '';
+  keys.forEach(k => {
+    const pill = document.createElement('div');
+    pill.className = 'collected-pill';
+    pill.innerHTML = `<span class="collected-label">${k}</span><span class="collected-val">${collectedSummary[k]}</span>`;
+    drawerItems.appendChild(pill);
+  });
+}
+
+/**
+ * Render Quick Action Chips
+ */
+function renderChips(chips) {
+  quickChips.innerHTML = '';
+  if (!chips || chips.length === 0) return;
+
+  chips.slice(0, 5).forEach(text => {
+    const btn = document.createElement('button');
+    btn.className = 'chip-btn';
+    btn.dataset.query = text;
+    btn.textContent = text;
+    quickChips.appendChild(btn);
+  });
+}
+
+/**
+ * Clear current conversation session
+ */
+async function clearSession() {
+  try {
+    const backendUrl = await getBackendUrl();
+    await fetch(`${backendUrl}/api/universal/clear?session_id=${currentSessionId}`, { method: 'POST' });
+  } catch (e) {
+    // Continue
+  }
+  currentSessionId = 'browser_session_' + Math.random().toString(36).substring(2, 9);
+  chatContainer.innerHTML = '';
+  drawerCollected.style.display = 'none';
+  progressBarContainer.style.display = 'none';
+  if (currentExtractedContext) {
+    await analyzePageWithBackend(currentExtractedContext);
+  }
+}
+
+/**
+ * Append message bubble to chat container
  */
 function appendChatMessage(sender, text) {
   const wrapper = document.createElement('div');
@@ -497,40 +575,24 @@ function appendChatMessage(sender, text) {
   wrapper.appendChild(timeEl);
   chatContainer.appendChild(wrapper);
 
-  // Store in history
-  conversationHistory.push({
-    sender: sender,
-    role: sender === 'user' ? 'user' : 'assistant',
-    text: text
-  });
-
-  // Scroll to bottom
   const panelBody = document.getElementById('panel-body');
   panelBody.scrollTop = panelBody.scrollHeight;
 }
 
 /**
- * Simple, safe markdown formatter for bot responses
+ * Safe markdown formatter
  */
 function formatMarkdown(text) {
   if (!text) return '';
-
-  // Escape HTML entities to prevent injection
   let safe = text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 
-  // Bold **text**
   safe = safe.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-
-  // Code block ```code```
-  safe = safe.replace(/```([\s\S]*?)```/g, '<pre style="background:#0f172a;padding:6px;border-radius:4px;overflow-x:auto;margin:4px 0;font-size:11px;"><code>$1</code></pre>');
-
-  // Inline code `code`
   safe = safe.replace(/`([^`]+)`/g, '<code style="background:#0f172a;padding:1px 4px;border-radius:3px;font-size:11px;">$1</code>');
+  safe = safe.replace(/### (.*?)\n/g, '<h3 style="color:#93c5fd;margin:6px 0 3px;">$1</h3>');
 
-  // Bullet points
   const lines = safe.split('\n');
   let inList = false;
   let formatted = '';
@@ -554,17 +616,41 @@ function formatMarkdown(text) {
     }
   }
 
-  if (inList) {
-    formatted += '</ul>';
-  }
-
+  if (inList) formatted += '</ul>';
   return formatted || safe;
 }
 
-function showLoading(show) {
+function showLoading(show, text = 'AI is analyzing website...') {
   loadingIndicator.style.display = show ? 'inline-flex' : 'none';
+  loadingText.textContent = text;
   if (show) {
     const panelBody = document.getElementById('panel-body');
     panelBody.scrollTop = panelBody.scrollHeight;
   }
+}
+
+function isRestrictedUrl(url) {
+  if (!url) return true;
+  return (
+    url.startsWith('chrome://') ||
+    url.startsWith('chrome-extension://') ||
+    url.startsWith('edge://') ||
+    url.startsWith('about:') ||
+    url.startsWith('view-source:') ||
+    url.startsWith('devtools://')
+  );
+}
+
+function showRestrictedBanner(show) {
+  restrictedNotice.style.display = show ? 'block' : 'none';
+}
+
+function setContextBadge(type, title, subtitle) {
+  contextBadge.className = 'badge-status';
+  if (type === 'warning') contextBadge.classList.add('warning');
+  if (type === 'error') contextBadge.classList.add('error');
+
+  badgeText.textContent = title;
+  badgeIcon.textContent = type === 'error' ? '✖' : (type === 'warning' ? '▲' : '●');
+  if (subtitle) contextBadge.title = subtitle;
 }

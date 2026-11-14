@@ -15,7 +15,14 @@ from pydantic import BaseModel
 
 from backend.config import STARTING_URL, BACKEND_HOST, BACKEND_PORT
 from backend.controller import AutomationController
-from backend.models import WebsiteContextPayload, WebsiteAnalysisResponse
+from backend.models import (
+    WebsiteContextPayload,
+    WebsiteAnalysisResponse,
+    UniversalPagePayload,
+    UniversalChatResponse
+)
+from backend.website_analyzer import website_analyzer
+from backend.conversation_manager import conversation_manager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("udyam_assistant")
@@ -136,6 +143,59 @@ async def chat_sidepanel(payload: WebsiteContextPayload):
         history=payload.conversation_history or []
     )
     return res
+
+# ==========================================
+# UNIVERSAL AI BROWSER ASSISTANT ENDPOINTS
+# ==========================================
+
+@app.post("/api/universal/analyze", response_model=UniversalChatResponse)
+async def analyze_universal_page(payload: UniversalPagePayload):
+    """
+    Universal website analyzer:
+    Detects any website category (government, job portal, university, ecommerce, banking, etc.),
+    page type, capabilities, and required documents. Returns conversational greeting.
+    """
+    logger.info(f"Universal page analysis: {payload.url} | Title: {payload.title}")
+    res = await asyncio.to_thread(
+        website_analyzer.analyze_page_on_open,
+        payload=payload
+    )
+    return res
+
+@app.post("/api/universal/chat", response_model=UniversalChatResponse)
+async def chat_universal(payload: UniversalPagePayload):
+    """
+    Multi-turn interactive conversation turn:
+    - Validates answers against dynamic form requirements
+    - Detects corrections to previous answers
+    - Advances question queue 1-by-1
+    - Answers open-ended user questions grounded in page context
+    """
+    logger.info(f"Universal chat turn: '{payload.user_message}' for {payload.url}")
+    res = await asyncio.to_thread(
+        website_analyzer.process_chat_message,
+        payload=payload
+    )
+    return res
+
+@app.post("/api/universal/clear")
+async def clear_universal_session(session_id: str = "default_session"):
+    """Clears conversation history and collected fields for a session."""
+    conversation_manager.clear_session(session_id)
+    return {"message": "Session reset successfully", "session_id": session_id}
+
+@app.get("/api/universal/session")
+async def get_universal_session(session_id: str = "default_session"):
+    """Returns current collected fields and workflow state."""
+    session = conversation_manager.get_or_create_session(session_id)
+    return {
+        "session_id": session.session_id,
+        "url": session.current_url,
+        "classification": session.classification.dict() if session.classification else None,
+        "collected_summary": session.get_collected_summary(),
+        "workflow_stage": session.workflow_stage,
+        "message_count": len(session.conversation_history)
+    }
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

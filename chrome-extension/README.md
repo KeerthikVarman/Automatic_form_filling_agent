@@ -1,98 +1,78 @@
-# Udyam AI Assistant - Chrome Side Panel Assistant (Manifest V3)
+# Universal AI Browser Assistant (Manifest V3)
 
-An intelligent AI Browser Side Panel Assistant for Google Chrome. It embeds directly alongside any active web page (occupying ~35-45% of the browser on the right side), automatically extracts the webpage's visible text, headings, and form fields, and provides structured application requirements (Eligibility, Required Documents, Form Fields, and Step-by-Step Procedures) with grounded AI conversational assistance.
-
----
-
-## 🌟 Key Features
-
-1. **Native Chrome Side Panel Integration (`chrome.sidePanel`)**:
-   - Opens smoothly on the right side of Chrome when clicking the extension icon.
-   - Leaves the active portal / website completely visible and interactive on the left.
-2. **Automatic Context Extraction**:
-   - Captures active tab URL, page title, headings (`h1`–`h4`), visible content text, and form inputs/labels.
-   - Respects user privacy and security (never captures internal browser settings or passwords).
-3. **Structured Requirements Extraction**:
-   - 🎯 **Eligibility Criteria**: Identifies who is qualified to apply.
-   - 📄 **Required Documents**: Highlights mandatory certificates and IDs (Aadhaar, PAN, GSTIN, Bank details).
-   - 📝 **Key Form Fields & Validation Rules**: Breaks down required input fields.
-   - 🚀 **Step-by-Step Application Procedures**: Guides users step-by-step.
-4. **Context-Grounded AI Chat**:
-   - Ask follow-up questions about the page in real-time.
-   - Grounded strictly in page facts; clearly states when requested info is unavailable instead of hallucinating.
-5. **Interactive Controls**:
-   - 🔄 **Refresh Page Context** button to capture updated content after navigating or submitting forms.
-   - Quick action prompt chips for 1-click queries.
-   - Real-time backend connection status dot.
+A website-aware, universal AI Side Panel Assistant for Google Chrome. It embeds alongside **any accessible website** (government portals, job applications, university admissions, e-commerce, banking & services, documentation), dynamically discovers page content and forms, and engages in an interactive multi-turn conversation asking questions **one at a time**.
 
 ---
 
-## 🚀 Installation Guide
+## 🌟 Universal Capabilities
 
-### Step 1: Open Chrome Extensions Page
-1. Launch **Google Chrome**.
-2. Navigate to `chrome://extensions` in the address bar (or go to **Menu ⋮** → **Extensions** → **Manage Extensions**).
+1. **Universal Website & Page Detection**:
+   - Zero hardcoded websites or static questionnaires.
+   - Detects domain category (`Government`, `Job Portal`, `Admissions`, `E-Commerce`, `Banking/Finance`, `Service Booking`, `Documentation`, `SaaS`).
+   - Detects page type (`Application Form`, `Login`, `Registration`, `Product Details`, `Checkout`, `Information Article`, `Dashboard`).
+2. **Fixed Live DOM Extraction**:
+   - Accurately captures full text from live DOM elements without empty disconnected clone bugs.
+   - Scrapes headings (`h1`–`h5`), meta descriptions, and interactive elements.
+   - Identifies inputs, dropdowns (`<select>` options), textareas, checkboxes, buttons, placeholders, and required attributes.
+3. **Interactive 1-by-1 Question Progression**:
+   - Asks one question at a time instead of dumping long forms.
+   - Validates each user answer dynamically (emails, phone numbers, dates, numbers, options).
+   - Explains *why* each piece of information is required on that specific page.
+   - Preserves answered fields and avoids asking duplicate questions.
+4. **Correction Handling**:
+   - Allows users to correct prior answers naturally (e.g. *"Actually, my email is..."* or *"Change name to..."*).
+5. **State Preservation Across Navigation**:
+   - Remembers previously collected user profile answers when moving across multi-step pages or steps.
+6. **Privacy & Security**:
+   - Masks sensitive values in chat and collected drawers (passwords masked as `••••••••`, Aadhaar/SSN masked to last 4 digits, phones masked).
+   - Never exposes API keys in client-side code.
 
-### Step 2: Enable Developer Mode
-1. In the top-right corner of `chrome://extensions`, toggle **Developer mode** to **ON**.
+---
 
-### Step 3: Load the Unpacked Extension
-1. Click the **Load unpacked** button in the top-left toolbar.
-2. Navigate to this folder:
+## 🚀 How to Install and Test
+
+### 1. Load the Extension in Chrome
+1. Open Google Chrome and navigate to `chrome://extensions`.
+2. Turn **Developer mode** toggle **ON** (top right).
+3. Click **Load unpacked** (top left) and select:
    ```
    c:\Users\keert\OneDrive\Desktop\udamy\chrome-extension
    ```
-3. Click **Select Folder**.
-4. The **Udyam AI Assistant - Side Panel** card will appear in your extensions list.
+   *(If already loaded, click the circular **↻ Reload** button on the extension card).*
+
+### 2. Pin to Chrome Toolbar
+1. Click the **Extensions puzzle icon (🧩)** in Chrome's toolbar.
+2. Click the **Pin (📌)** icon next to **Universal AI Browser Assistant**.
+
+### 3. Test on Diverse Websites
+Open any website and click the toolbar icon:
+- **Government Portal**: [https://udyamregistration.gov.in](https://udyamregistration.gov.in)
+- **Job / Careers**: Any LinkedIn, Indeed, or career page
+- **University**: Any university admissions portal
+- **E-Commerce**: Any Amazon, product, or shopping page
+- **Documentation**: [https://docs.fastapi.tiangolo.com](https://docs.fastapi.tiangolo.com) or Wikipedia
+
+The assistant dynamically identifies the portal, adapts the prompt chips, guides you through requirements, and interacts one step at a time!
 
 ---
 
-## 📌 How to Pin and Open the Side Panel
-
-1. Click the **Extensions puzzle icon (🧩)** in the top-right corner of Google Chrome.
-2. Find **Udyam AI Assistant - Side Panel** and click the **Pin icon (📌)** next to it.
-3. Open any website in your browser (e.g. `https://udyamregistration.gov.in/UdyamRegistration.aspx` or any portal).
-4. Click the pinned **Udyam AI** icon in your toolbar:
-   - The side panel will open on the right side of Chrome!
-   - The webpage will remain fully visible and usable on the left!
-
----
-
-## ⚙️ Configuration & Options
-
-To configure the backend or frontend URLs:
-1. Right-click the extension icon in Chrome and click **Options**.
-2. You can configure:
-   - **Local Web App URL**: `http://localhost:5173`
-   - **Production App URL**: `https://your-production-url.com`
-   - **FastAPI Backend URL**: `http://localhost:8000`
-3. Click **Save Settings**.
-
----
-
-## 🔄 How to Reload After Making Changes
-
-1. Open `chrome://extensions`.
-2. Locate the **Udyam AI Assistant - Side Panel** card.
-3. Click the circular **Reload icon (↻)** on the bottom right of the card.
-4. If the side panel is currently open in Chrome, close and re-open it to load the updated scripts.
-
----
-
-## 📂 Project Structure
+## 📂 Architecture
 
 ```
-chrome-extension/
-├── manifest.json       # Manifest V3 with sidePanel, activeTab, scripting permissions
-├── background.js       # Background service worker (configures sidePanel open behavior)
-├── sidepanel.html      # Modern dark-themed Side Panel UI layout
-├── sidepanel.js        # Tab extraction, backend API communication & chat controller
-├── config.js           # Default URL and backend endpoints
-├── options.html        # Options / settings page UI
-├── options.js          # Settings synchronization
-├── icons/
-│   ├── icon16.png      # 16x16 Toolbar icon
-│   ├── icon48.png      # 48x48 Extension manager icon
-│   └── icon128.png     # 128x128 High-DPI icon
-└── README.md           # Documentation
+udamy/
+├── backend/
+│   ├── answer_validator.py       # Validates inputs, formats & masks sensitive data
+│   ├── website_detector.py       # Universal domain & page-type classification
+│   ├── intent_detector.py        # Identifies user goals & contextual prompt chips
+│   ├── conversation_manager.py   # Multi-turn session memory & answer queue
+│   ├── website_analyzer.py       # Groq LLM integration & dynamic workflow engine
+│   ├── models.py                 # Pydantic schemas for universal payloads
+│   └── main.py                   # FastAPI universal endpoints (/api/universal/*)
+├── chrome-extension/
+│   ├── manifest.json             # Manifest V3 (sidePanel, activeTab, scripting)
+│   ├── background.js             # Service worker side panel trigger
+│   ├── sidepanel.html            # Dark-themed side panel UI with progress & drawer
+│   ├── sidepanel.js              # Live DOM extractor & interactive chat controller
+│   └── icons/                    # App icons (16, 48, 128)
+└── start.py                      # Starts backend & frontend concurrently
 ```

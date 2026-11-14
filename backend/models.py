@@ -71,4 +71,69 @@ class WebsiteAnalysisResponse(BaseModel):
     answer: str = ""
     unsupported_info: List[str] = []
 
+# ==========================================
+# UNIVERSAL WEBSITE ASSISTANT MODELS
+# ==========================================
 
+class FormElementInfo(BaseModel):
+    tag: str = "input"
+    type: str = "text"
+    name: str = ""
+    id: str = ""
+    label: str = ""
+    placeholder: str = ""
+    required: bool = False
+    options: Optional[List[str]] = None
+    value: Optional[str] = None
+
+class UniversalPagePayload(BaseModel):
+    session_id: str = "default_session"
+    url: str
+    title: str = ""
+    meta_description: Optional[str] = None
+    headings: List[str] = []
+    page_text: str = ""
+    form_elements: List[FormElementInfo] = []
+    navigation_links: List[Dict[str, str]] = []
+    user_message: Optional[str] = None
+    force_refresh: bool = False
+    conversation_history: Optional[List[Dict[str, Any]]] = None
+
+class WebsiteClassification(BaseModel):
+    category: str = "general"
+    # Options: government_portal, job_portal, university_admissions, ecommerce, banking_finance, service_booking, documentation_info, social_community, general_saas, login_registration
+    page_type: str = "general_page"
+    # Options: login, registration, application_form, product_catalog, article_info, dashboard, search_results, checkout, contact_support
+    site_name: str = ""
+    page_purpose: str = ""
+    confidence: float = 0.9
+
+class QuestionStep(BaseModel):
+    question_id: str
+    field_name: str
+    question_text: str
+    field_type: str = "text"  # text, email, phone, number, select, date, boolean, file
+    explanation: str = ""  # Why this information is required
+    is_mandatory: bool = True
+    options: Optional[List[str]] = None
+    validation_hint: Optional[str] = None
+
+class CollectedField(BaseModel):
+    field_id: str
+    label: str
+    raw_value: str
+    masked_value: str
+    verified: bool = True
+    updated_at: float = 0.0
+
+class UniversalChatResponse(BaseModel):
+    session_id: str
+    classification: WebsiteClassification = Field(default_factory=WebsiteClassification)
+    user_intent: str = "understand_page"
+    assistant_message: str = ""
+    current_question: Optional[QuestionStep] = None
+    progress_text: Optional[str] = None
+    collected_summary: Dict[str, str] = Field(default_factory=dict)
+    suggested_chips: List[str] = Field(default_factory=list)
+    workflow_stage: str = "understanding"  # understanding, intent_clarification, question_flow, completed, information_answering
+    unsupported_notes: List[str] = Field(default_factory=list)

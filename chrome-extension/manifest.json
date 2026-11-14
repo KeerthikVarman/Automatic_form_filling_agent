@@ -1,15 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "Udyam AI Assistant - Side Panel",
-  "version": "2.0.0",
-  "description": "AI Browser Side Panel Assistant that analyzes any webpage, extracts application requirements, documents, eligibility, and answers questions.",
+  "name": "Universal AI Browser Assistant",
+  "version": "3.0.0",
+  "description": "Universal AI Browser Assistant that dynamically understands any website, detects user intent, and provides interactive 1-by-1 guidance.",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
   "action": {
-    "default_title": "Open Udyam AI Side Panel",
+    "default_title": "Open Universal AI Side Panel",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
